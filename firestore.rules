@@ -1,0 +1,32 @@
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // Events
+    match /events/{eventId} {
+      allow read: if true; // Publicly readable for gallery access
+      allow create: if isAuthenticated();
+      allow update, delete: if isOwner(resource.data.createdBy);
+
+      // Photos subcollection
+      match /photos/{photoId} {
+        allow read: if true;
+        allow create: if isAuthenticated();
+        allow update, delete: if isOwner(resource.data.uploadedBy);
+      }
+    }
+    
+    // Users collection for profiles if needed
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if isOwner(userId);
+    }
+  }
+}

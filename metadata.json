@@ -1,0 +1,5 @@
+{
+  "name": "SnapSearch: Real-Time Event Photo Sharing",
+  "description": "A real-time event photo sharing system with QR code access and AI-powered face search.",
+  "requestFramePermissions": ["camera"]
+}
