@@ -80,10 +80,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = async () => {
     const existing = loadUser();
     if (existing) {
-      const accessToken = await ensureGoogleAccessToken(true);
-      await signInFirebaseWithGoogleAccessToken(accessToken);
       setStoreNamespace(existing.uid);
       setUser(existing);
+
+      const cachedToken = getStoredAccessToken();
+      if (cachedToken) {
+        void signInFirebaseWithGoogleAccessToken(cachedToken).catch((error) => {
+          console.error('Firebase auth for existing user failed:', error);
+        });
+      } else {
+        void ensureGoogleAccessToken(false)
+          .then((token) => signInFirebaseWithGoogleAccessToken(token))
+          .catch((error) => {
+            console.error('Silent token refresh for existing user failed:', error);
+          });
+      }
+
       void upsertUserProfile({
         uid: existing.uid,
         email: existing.email,
@@ -97,7 +109,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     const accessToken = await ensureGoogleAccessToken(true);
-    await signInFirebaseWithGoogleAccessToken(accessToken);
+    try {
+      await signInFirebaseWithGoogleAccessToken(accessToken);
+    } catch (error) {
+      // Login to app should continue even if Firebase auth handshake fails.
+      console.error('Firebase auth for new login failed:', error);
+    }
     const profile = await fetchGoogleUserProfile(accessToken);
     const nextUser: AppUser = {
       uid: profile.uid || makeId(),
