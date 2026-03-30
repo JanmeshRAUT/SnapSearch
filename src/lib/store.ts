@@ -156,13 +156,17 @@ function syncRemoteEvent(event: EventRecord) {
     ...event,
     allowedEmails: dedupeEmails(event.allowedEmails || []),
     updatedAt: new Date().toISOString(),
+  }).catch((error) => {
+    console.error('Firestore event sync failed:', error);
   });
 }
 
 function deleteRemoteEvent(eventId: string) {
   const eventsCollection = getEventsCollection();
   if (!eventsCollection) return;
-  void deleteDoc(doc(eventsCollection, eventId));
+  void deleteDoc(doc(eventsCollection, eventId)).catch((error) => {
+    console.error('Firestore event delete failed:', error);
+  });
 }
 
 function mapRemoteEvent(payload: Record<string, unknown>): EventRecord | null {

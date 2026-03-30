@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { clearGoogleToken, ensureGoogleAccessToken, fetchGoogleUserProfile } from '../lib/googleAuth';
+import { clearGoogleToken, ensureGoogleAccessToken, fetchGoogleUserProfile, getStoredAccessToken } from '../lib/googleAuth';
+import { signInFirebaseWithGoogleAccessToken } from '../lib/firebase';
 import { clearLocalStoreCache, setStoreNamespace, syncEventsFromFirebaseForUser, syncLocalEventsToFirebaseForUser, upsertUserProfile } from '../lib/store';
 
 const AUTH_USER_KEY = 'snapsearch.auth.user';
@@ -57,6 +58,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setStoreNamespace(existing?.uid || null);
     setUser(existing);
     if (existing) {
+      const cachedToken = getStoredAccessToken();
+      if (cachedToken) {
+        void signInFirebaseWithGoogleAccessToken(cachedToken).catch((error) => {
+          console.error('Firebase auth bootstrap failed:', error);
+        });
+      }
       void upsertUserProfile({
         uid: existing.uid,
         email: existing.email,
@@ -73,6 +80,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = async () => {
     const existing = loadUser();
     if (existing) {
+      const accessToken = await ensureGoogleAccessToken(true);
+      await signInFirebaseWithGoogleAccessToken(accessToken);
       setStoreNamespace(existing.uid);
       setUser(existing);
       void upsertUserProfile({
@@ -88,6 +97,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     const accessToken = await ensureGoogleAccessToken(true);
+    await signInFirebaseWithGoogleAccessToken(accessToken);
     const profile = await fetchGoogleUserProfile(accessToken);
     const nextUser: AppUser = {
       uid: profile.uid || makeId(),

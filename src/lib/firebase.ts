@@ -1,8 +1,10 @@
 import { initializeApp, type FirebaseApp } from 'firebase/app';
+import { getAuth, GoogleAuthProvider, signInWithCredential, type Auth } from 'firebase/auth';
 import { getFirestore, type Firestore } from 'firebase/firestore';
 
 let cachedApp: FirebaseApp | null = null;
 let cachedDb: Firestore | null = null;
+let cachedAuth: Auth | null = null;
 
 function getFirebaseConfig() {
   const env = import.meta.env as Record<string, string | undefined>;
@@ -40,6 +42,28 @@ export function getFirestoreDb(): Firestore | null {
 
   cachedDb = getFirestore(cachedApp);
   return cachedDb;
+}
+
+export function getFirebaseAuth(): Auth | null {
+  if (cachedAuth) return cachedAuth;
+
+  const config = getFirebaseConfig();
+  if (!config) return null;
+
+  if (!cachedApp) {
+    cachedApp = initializeApp(config);
+  }
+
+  cachedAuth = getAuth(cachedApp);
+  return cachedAuth;
+}
+
+export async function signInFirebaseWithGoogleAccessToken(accessToken: string): Promise<void> {
+  const auth = getFirebaseAuth();
+  if (!auth || !accessToken) return;
+
+  const credential = GoogleAuthProvider.credential(undefined, accessToken);
+  await signInWithCredential(auth, credential);
 }
 
 export function isFirebaseConfigured(): boolean {
