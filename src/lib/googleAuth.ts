@@ -67,9 +67,38 @@ async function loadGoogleScript(): Promise<void> {
   if (window.google?.accounts?.oauth2) return;
 
   await new Promise<void>((resolve, reject) => {
+    const waitForOauthReady = () => {
+      const startedAt = Date.now();
+      const check = () => {
+        if (window.google?.accounts?.oauth2) {
+          resolve();
+          return;
+        }
+        if (Date.now() - startedAt > 7000) {
+          reject(new Error('Google OAuth script loaded but API did not initialize.'));
+          return;
+        }
+        window.setTimeout(check, 50);
+      };
+      check();
+    };
+
     const existing = document.querySelector('script[data-google-identity="true"]') as HTMLScriptElement | null;
     if (existing) {
-      existing.addEventListener('load', () => resolve(), { once: true });
+      if (window.google?.accounts?.oauth2) {
+        resolve();
+        return;
+      }
+
+      if (existing.dataset.loaded === 'true') {
+        waitForOauthReady();
+        return;
+      }
+
+      existing.addEventListener('load', () => {
+        existing.dataset.loaded = 'true';
+        waitForOauthReady();
+      }, { once: true });
       existing.addEventListener('error', () => reject(new Error('Failed to load Google Identity script')), { once: true });
       return;
     }
@@ -79,7 +108,10 @@ async function loadGoogleScript(): Promise<void> {
     script.async = true;
     script.defer = true;
     script.dataset.googleIdentity = 'true';
-    script.onload = () => resolve();
+    script.onload = () => {
+      script.dataset.loaded = 'true';
+      waitForOauthReady();
+    };
     script.onerror = () => reject(new Error('Failed to load Google Identity script'));
     document.head.appendChild(script);
   });

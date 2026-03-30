@@ -1,9 +1,25 @@
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { Camera, LogIn, LogOut, User as UserIcon, LayoutDashboard, UserCircle } from 'lucide-react';
+import { Camera, LogIn, LogOut, LayoutDashboard, UserCircle, Loader2 } from 'lucide-react';
+import { useState } from 'react';
+import { toast } from 'sonner';
 
 export function Navbar() {
   const { user, login, logout } = useAuth();
+  const [loggingIn, setLoggingIn] = useState(false);
+
+  const handleLogin = async () => {
+    setLoggingIn(true);
+    try {
+      await login();
+    } catch (error) {
+      console.error('Login click failed:', error);
+      const message = error instanceof Error ? error.message : 'Login failed. Please try again.';
+      toast.error(message);
+    } finally {
+      setLoggingIn(false);
+    }
+  };
 
   return (
     <nav className="bg-white border-b border-neutral-200 sticky top-0 z-50">
@@ -38,11 +54,12 @@ export function Navbar() {
             </div>
           ) : (
             <button
-              onClick={login}
+              onClick={handleLogin}
+              disabled={loggingIn}
               className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-orange-500 text-white rounded-full font-medium hover:bg-orange-600 transition-colors"
             >
-              <LogIn className="w-4 h-4" />
-              <span className="hidden sm:inline">Login</span>
+              {loggingIn ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
+              <span className="hidden sm:inline">{loggingIn ? 'Logging in...' : 'Login'}</span>
             </button>
           )}
         </div>
