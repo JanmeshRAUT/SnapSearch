@@ -32,12 +32,15 @@ export function getPublicAppBaseUrl(): string {
   return runtimeOrigin;
 }
 
-export async function createSecureClientDashboardUrl(eventId: string): Promise<string> {
+export async function createSecureClientDashboardUrl(
+  eventId: string,
+  options?: { rotate?: boolean },
+): Promise<string> {
   if (!eventId?.trim()) {
     throw new Error('Missing event id for secure share link.');
   }
 
-  const token = await issueEventShareToken(eventId);
+  const token = await issueEventShareToken(eventId, { rotate: options?.rotate === true });
   if (!token) {
     throw new Error('Unable to create secure share link for this event.');
   }

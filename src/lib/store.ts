@@ -8,6 +8,7 @@ export interface EventRecord {
   isPublic?: boolean;
   driveFolderId?: string;
   driveFolderLink?: string;
+  shareTokenValue?: string;
   shareTokenHash?: string;
   shareTokenUpdatedAt?: string;
 }
@@ -181,15 +182,26 @@ export function setEventDriveFolder(eventId: string, input: { driveFolderId: str
   return next;
 }
 
-export async function issueEventShareToken(eventId: string): Promise<string | null> {
+export async function issueEventShareToken(
+  eventId: string,
+  options?: { rotate?: boolean },
+): Promise<string | null> {
   const store = readStore();
   const idx = store.events.findIndex((event) => event.id === eventId);
   if (idx === -1) return null;
 
+  const existing = store.events[idx];
+  const shouldRotate = options?.rotate === true;
+
+  if (!shouldRotate && existing.shareTokenValue && existing.shareTokenHash) {
+    return existing.shareTokenValue;
+  }
+
   const token = makeSecureToken();
   const tokenHash = await sha256Hex(token);
   const next: EventRecord = {
-    ...store.events[idx],
+    ...existing,
+    shareTokenValue: token,
     shareTokenHash: tokenHash,
     shareTokenUpdatedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
@@ -204,12 +216,16 @@ export async function validateEventShareToken(eventId: string, token: string): P
   const event = getEvent(eventId);
   if (!event) return false;
 
-  if (event.isPublic !== false && !event.shareTokenHash) {
+  if (event.isPublic !== false) {
     return true;
   }
 
-  if (!token || !event.shareTokenHash) {
+  if (!token) {
     return false;
+  }
+
+  if (!event.shareTokenHash) {
+    return token === event.shareTokenValue;
   }
 
   const incomingHash = await sha256Hex(token);

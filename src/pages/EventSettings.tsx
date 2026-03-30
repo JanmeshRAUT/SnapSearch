@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import { deleteEvent, getEvent, updateEvent } from '../lib/store';
 import { EventFlowNav } from '../components/EventFlowNav';
 import { deleteDriveFolderWithContents } from '../lib/googleDrive';
+import { createSecureClientDashboardUrl, getPublicAppBaseUrl } from '../lib/shareAccess';
 
 export function EventSettings() {
   const { eventId } = useParams();
@@ -16,6 +17,10 @@ export function EventSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [creatingShareUrl, setCreatingShareUrl] = useState(false);
+  const [shareUrl, setShareUrl] = useState('');
+  const publicBaseUrl = getPublicAppBaseUrl();
+  const usingLocalhostBase = /localhost|127\.0\.0\.1/i.test(publicBaseUrl);
   
   const [name, setName] = useState('');
   const [isPublic, setIsPublic] = useState(true);
@@ -52,16 +57,55 @@ export function EventSettings() {
 
     setSaving(true);
     try {
-      updateEvent(eventId!, {
+      const updated = updateEvent(eventId!, {
         name: name.trim(),
         isPublic,
       });
+
+      if (updated) {
+        setEvent(updated);
+      }
       toast.success('Settings updated');
     } catch (error) {
       console.error('Update error:', error);
       toast.error('Failed to update settings');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleGenerateShareLink = async (rotate = false) => {
+    if (!eventId) return;
+
+    setCreatingShareUrl(true);
+    try {
+      const url = await createSecureClientDashboardUrl(eventId, { rotate });
+      setShareUrl(url);
+      if (rotate) {
+        toast.success('Secure link regenerated. Previous link has been revoked.');
+      } else {
+        toast.success('Secure link is ready to share.');
+      }
+    } catch (error) {
+      console.error('Generate share link error:', error);
+      toast.error('Failed to generate secure link');
+    } finally {
+      setCreatingShareUrl(false);
+    }
+  };
+
+  const handleCopyLink = async () => {
+    if (!shareUrl) {
+      toast.info('Generate a secure link first.');
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      toast.success('Secure link copied to clipboard');
+    } catch (error) {
+      console.error('Copy link error:', error);
+      toast.error('Unable to copy link. Please copy manually.');
     }
   };
 
@@ -169,6 +213,59 @@ export function EventSettings() {
                   <p className="text-xs text-neutral-500">Only secure QR/share links can access this gallery.</p>
                 </div>
               </button>
+            </div>
+          </section>
+
+          <section className="space-y-4">
+            <h3 className="text-lg font-bold flex items-center gap-2">
+              <Lock className="w-5 h-5 text-neutral-400" />
+              Share Access
+            </h3>
+
+            <div className="rounded-3xl border border-neutral-200 bg-neutral-50 p-5 space-y-4">
+              <p className="text-sm text-neutral-600">
+                {isPublic
+                  ? 'Public event: anyone can access with the event link. You can still share a secure client link if needed.'
+                  : 'Private event: guests must use a secure QR/link generated below.'}
+              </p>
+
+              <div className="flex flex-wrap gap-3">
+                <button
+                  onClick={() => handleGenerateShareLink(false)}
+                  disabled={creatingShareUrl}
+                  className="px-5 py-3 bg-black text-white rounded-2xl font-bold hover:bg-neutral-800 transition-all disabled:opacity-50"
+                >
+                  {creatingShareUrl ? 'Generating...' : 'Generate Secure Link'}
+                </button>
+                <button
+                  onClick={handleCopyLink}
+                  disabled={!shareUrl}
+                  className="px-5 py-3 bg-white border border-neutral-200 rounded-2xl font-bold hover:bg-neutral-100 transition-all disabled:opacity-50"
+                >
+                  Copy Link
+                </button>
+                <button
+                  onClick={() => handleGenerateShareLink(true)}
+                  disabled={creatingShareUrl}
+                  className="px-5 py-3 bg-orange-50 text-orange-600 border border-orange-200 rounded-2xl font-bold hover:bg-orange-100 transition-all disabled:opacity-50"
+                >
+                  Regenerate Link
+                </button>
+              </div>
+
+              <div className="p-3 bg-white rounded-2xl border border-neutral-200 text-xs font-mono break-all text-neutral-500">
+                {shareUrl || 'No secure link generated yet.'}
+              </div>
+
+              <div className="p-3 bg-white rounded-2xl border border-neutral-200 text-xs text-neutral-500 space-y-1">
+                <p className="font-semibold text-neutral-700">Current Share Base URL</p>
+                <p className="font-mono break-all">{publicBaseUrl}</p>
+                {usingLocalhostBase && (
+                  <p className="text-amber-700">
+                    This URL uses localhost and works only on this machine. For sharing to other people/devices, set VITE_PUBLIC_APP_URL to your public domain.
+                  </p>
+                )}
+              </div>
             </div>
           </section>
 
