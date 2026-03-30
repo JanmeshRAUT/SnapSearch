@@ -56,6 +56,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const existing = loadUser();
     setStoreNamespace(existing?.uid || null);
     setUser(existing);
+    if (existing) {
+      void upsertUserProfile({
+        uid: existing.uid,
+        email: existing.email,
+        displayName: existing.displayName,
+        photoURL: existing.photoURL,
+        createdAt: existing.metadata.creationTime,
+      });
+      void syncLocalEventsToFirebaseForUser(existing.uid);
+      void syncEventsFromFirebaseForUser(existing.uid);
+    }
     setLoading(false);
   }, []);
 

@@ -4,7 +4,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, Camera, Search, User, ArrowRight, Grid, Clock, Sparkles, Loader2, Plus, Download, Filter, Calendar } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
-import { canUserAccessEvent, countPhotosUploadedBy, getEventFromAnySource, getUserStats, listActivityByUser, listEventsByCreator, listPhotos } from '../lib/store';
+import { canUserAccessEvent, countPhotosUploadedBy, getEventFromAnySource, getUserStats, listActivityByUser, listEventsByCreator, listPhotos, validateEventShareToken } from '../lib/store';
 
 export function ClientDashboard() {
   const { user, login } = useAuth();
@@ -27,6 +27,7 @@ export function ClientDashboard() {
     const fetchDashboardData = async () => {
       const query = new URLSearchParams(location.search);
       const sharedEventId = query.get('event');
+      const sharedToken = query.get('token') || '';
 
       if (sharedEventId) {
         setIsSharedView(true);
@@ -38,23 +39,24 @@ export function ClientDashboard() {
           return;
         }
 
-        if (!canUserAccessEvent(found, { uid: user?.uid, email: user?.email })) {
-          if (!user && found.isPublic === false) {
-            try {
-              await login();
-              return;
-            } catch {
-              setSharedAccessError('Private event. Please sign in with a granted Gmail account.');
-              setLoading(false);
-              return;
-            }
-          }
-
-          if (found.isPublic === false) {
-            setSharedAccessError('Private event. Your Gmail is not granted access by the organizer.');
-            setLoading(false);
+        if (found.isPublic === false && !user) {
+          try {
+            await login();
             return;
+          } catch {
+            setSharedAccessError('Private gallery requires login. Please sign in to continue.');
+            setLoading(false);
           }
+          return;
+        }
+
+        const tokenAccess = await validateEventShareToken(sharedEventId, sharedToken);
+        const accountAccess = canUserAccessEvent(found, { uid: user?.uid, email: user?.email });
+
+        if (!tokenAccess && !accountAccess) {
+          setSharedAccessError('Private event access denied. Scan a valid QR from organizer.');
+          setLoading(false);
+          return;
         }
 
         const eventPhotos = listPhotos(sharedEventId);
@@ -135,6 +137,14 @@ export function ClientDashboard() {
             >
               Go to Home
             </Link>
+            {sharedAccessError.includes('requires login') && (
+              <button
+                onClick={login}
+                className="inline-flex items-center gap-2 px-6 py-3 bg-orange-500 text-white rounded-full font-bold hover:bg-orange-600 transition-all"
+              >
+                Login with Google
+              </button>
+            )}
           </div>
         </div>
       );

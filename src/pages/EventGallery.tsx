@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
-import { canUserAccessEvent, deletePhoto, deletePhotosBulk, getEventFromAnySource, incrementUserStats, listPhotos, recordActivity, upsertDrivePhotos } from '../lib/store';
+import { canUserAccessEvent, deletePhoto, deletePhotosBulk, getEventFromAnySource, incrementUserStats, listPhotos, recordActivity, upsertDrivePhotos, validateEventShareToken } from '../lib/store';
 import { EventFlowNav } from '../components/EventFlowNav';
 import { deleteDriveFile, getDriveImageUrl, listDriveImagesInFolder } from '../lib/googleDrive';
 import { createSecureClientDashboardUrl } from '../lib/shareAccess';
@@ -36,14 +36,20 @@ export function EventGallery() {
 
     const fetchEvent = async () => {
       const foundEvent = await getEventFromAnySource(eventId);
+
       if (foundEvent) {
-        if (!canUserAccessEvent(foundEvent, { uid: user?.uid, email: user?.email })) {
-          if (!user) {
-            toast.info('Private event: please login with your granted Gmail account.');
-            await login();
-            return;
-          }
-          toast.error('Your Gmail does not have access to this private event.');
+        const tokenFromLink = new URLSearchParams(location.search).get('token') || '';
+        if (foundEvent.isPublic === false && !user) {
+          toast.info('Private gallery requires login.');
+          await login();
+          return;
+        }
+
+        const tokenAccess = await validateEventShareToken(eventId, tokenFromLink);
+        const accountAccess = canUserAccessEvent(foundEvent, { uid: user?.uid, email: user?.email });
+
+        if (!tokenAccess && !accountAccess) {
+          toast.error('Private event access denied. Use a valid QR/share link or granted account.');
           navigate('/client');
           return;
         }
