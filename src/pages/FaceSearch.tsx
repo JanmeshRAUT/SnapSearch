@@ -123,11 +123,29 @@ export function FaceSearch() {
     const zip = new JSZip();
     const folder = zip.folder(`my-matched-photos`);
 
+    const urlToBlob = async (url: string): Promise<Blob> => {
+      if (url.startsWith('data:')) {
+        const response = await fetch(url);
+        return response.blob();
+      }
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch image: ${response.status}`);
+      }
+      return response.blob();
+    };
+
     try {
       for (let i = 0; i < results.length; i++) {
         const photo = results[i];
-        const base64Data = photo.url.split(',')[1];
-        folder?.file(`photo-${photo.id}.jpg`, base64Data, { base64: true });
+        try {
+          const blob = await urlToBlob(photo.url);
+          const ext = blob.type.includes('png') ? 'png' : 'jpg';
+          folder?.file(`photo-${photo.id}.${ext}`, blob);
+        } catch (error) {
+          console.error('Skipped matched photo during zip build:', photo.id, error);
+        }
       }
 
       const content = await zip.generateAsync({ type: 'blob' });

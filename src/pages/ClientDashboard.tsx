@@ -4,10 +4,10 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, Camera, Search, User, ArrowRight, Grid, Clock, Sparkles, Loader2, Plus, Download, Filter, Calendar } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
-import { countPhotosUploadedBy, getEvent, getUserStats, listActivityByUser, listEventsByCreator, listPhotos, validateEventShareToken } from '../lib/store';
+import { canUserAccessEvent, countPhotosUploadedBy, getEventFromAnySource, getUserStats, listActivityByUser, listEventsByCreator, listPhotos } from '../lib/store';
 
 export function ClientDashboard() {
-  const { user } = useAuth();
+  const { user, login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [recentEvents, setRecentEvents] = useState<any[]>([]);
@@ -27,23 +27,34 @@ export function ClientDashboard() {
     const fetchDashboardData = async () => {
       const query = new URLSearchParams(location.search);
       const sharedEventId = query.get('event');
-      const sharedToken = query.get('token') || '';
 
       if (sharedEventId) {
         setIsSharedView(true);
 
-        const valid = await validateEventShareToken(sharedEventId, sharedToken);
-        if (!valid) {
-          setSharedAccessError('Invalid or expired secure link. Ask the organizer for a fresh QR code.');
-          setLoading(false);
-          return;
-        }
-
-        const found = getEvent(sharedEventId);
+        const found = await getEventFromAnySource(sharedEventId);
         if (!found) {
           setSharedAccessError('This event is not available in this browser yet. Open from the organizer system or connect a shared backend.');
           setLoading(false);
           return;
+        }
+
+        if (!canUserAccessEvent(found, { uid: user?.uid, email: user?.email })) {
+          if (!user && found.isPublic === false) {
+            try {
+              await login();
+              return;
+            } catch {
+              setSharedAccessError('Private event. Please sign in with a granted Gmail account.');
+              setLoading(false);
+              return;
+            }
+          }
+
+          if (found.isPublic === false) {
+            setSharedAccessError('Private event. Your Gmail is not granted access by the organizer.');
+            setLoading(false);
+            return;
+          }
         }
 
         const eventPhotos = listPhotos(sharedEventId);
@@ -99,7 +110,7 @@ export function ClientDashboard() {
     };
 
     fetchDashboardData();
-  }, [location.search, navigate, user]);
+  }, [location.search, login, navigate, user]);
 
   if (!user && !isSharedView) return null;
 

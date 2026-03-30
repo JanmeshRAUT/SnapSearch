@@ -1,3 +1,6 @@
+import { collection, deleteDoc, doc, getDoc, getDocs, query, setDoc, where } from 'firebase/firestore';
+import { getFirestoreDb } from './firebase';
+
 export interface EventRecord {
   id: string;
   name: string;
@@ -6,11 +9,21 @@ export interface EventRecord {
   createdBy: string;
   creatorName: string;
   isPublic?: boolean;
+  allowedEmails?: string[];
   driveFolderId?: string;
   driveFolderLink?: string;
   shareTokenValue?: string;
   shareTokenHash?: string;
   shareTokenUpdatedAt?: string;
+}
+
+export interface UserProfileRecord {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL?: string;
+  createdAt: string;
+  updatedAt?: string;
 }
 
 export interface PhotoRecord {
@@ -49,6 +62,8 @@ interface StoreSchema {
 }
 
 const STORE_KEY = 'snapsearch.store.v1';
+const EVENTS_COLLECTION = 'events';
+const USERS_COLLECTION = 'users';
 
 function makeId() {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -84,6 +99,149 @@ function readStore(): StoreSchema {
 
 function writeStore(next: StoreSchema) {
   localStorage.setItem(STORE_KEY, JSON.stringify(next));
+}
+
+function getEventsCollection() {
+  const db = getFirestoreDb();
+  if (!db) return null;
+  return collection(db, EVENTS_COLLECTION);
+}
+
+function getUsersCollection() {
+  const db = getFirestoreDb();
+  if (!db) return null;
+  return collection(db, USERS_COLLECTION);
+}
+
+function dedupeEmails(emails: string[]): string[] {
+  return Array.from(new Set(emails.map((email) => normalizeEmail(email)).filter(Boolean))).sort();
+}
+
+function mergeEventIntoLocal(event: EventRecord): EventRecord {
+  const store = readStore();
+  const idx = store.events.findIndex((item) => item.id === event.id);
+  if (idx === -1) {
+    store.events.unshift(event);
+  } else {
+    store.events[idx] = {
+      ...store.events[idx],
+      ...event,
+      allowedEmails: dedupeEmails(event.allowedEmails || []),
+    };
+  }
+  writeStore(store);
+  return getEvent(event.id) || event;
+}
+
+function syncRemoteEvent(event: EventRecord) {
+  const eventsCollection = getEventsCollection();
+  if (!eventsCollection) return;
+
+  void setDoc(doc(eventsCollection, event.id), {
+    ...event,
+    allowedEmails: dedupeEmails(event.allowedEmails || []),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function deleteRemoteEvent(eventId: string) {
+  const eventsCollection = getEventsCollection();
+  if (!eventsCollection) return;
+  void deleteDoc(doc(eventsCollection, eventId));
+}
+
+function mapRemoteEvent(payload: Record<string, unknown>): EventRecord | null {
+  const id = String(payload.id || '').trim();
+  const name = String(payload.name || '').trim();
+  const createdBy = String(payload.createdBy || '').trim();
+  const creatorName = String(payload.creatorName || '').trim();
+  const createdAt = String(payload.createdAt || '').trim();
+
+  if (!id || !name || !createdBy || !creatorName || !createdAt) return null;
+
+  const allowedEmails = Array.isArray(payload.allowedEmails)
+    ? dedupeEmails(payload.allowedEmails.map((item) => String(item || '')))
+    : [];
+
+  return {
+    id,
+    name,
+    createdBy,
+    creatorName,
+    createdAt,
+    updatedAt: payload.updatedAt ? String(payload.updatedAt) : undefined,
+    isPublic: payload.isPublic !== false,
+    allowedEmails,
+    driveFolderId: payload.driveFolderId ? String(payload.driveFolderId) : undefined,
+    driveFolderLink: payload.driveFolderLink ? String(payload.driveFolderLink) : undefined,
+    shareTokenValue: payload.shareTokenValue ? String(payload.shareTokenValue) : undefined,
+    shareTokenHash: payload.shareTokenHash ? String(payload.shareTokenHash) : undefined,
+    shareTokenUpdatedAt: payload.shareTokenUpdatedAt ? String(payload.shareTokenUpdatedAt) : undefined,
+  };
+}
+
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+export function canUserAccessEvent(
+  event: EventRecord,
+  user: { uid?: string | null; email?: string | null } | null,
+): boolean {
+  if (event.isPublic !== false) return true;
+  if (user?.uid && user.uid === event.createdBy) return true;
+  const normalized = normalizeEmail(user?.email || '');
+  if (!normalized) return false;
+  return (event.allowedEmails || []).map(normalizeEmail).includes(normalized);
+}
+
+export async function getEventFromAnySource(eventId: string): Promise<EventRecord | null> {
+  const local = getEvent(eventId);
+  if (local) return local;
+
+  const eventsCollection = getEventsCollection();
+  if (!eventsCollection) return null;
+
+  try {
+    const snapshot = await getDoc(doc(eventsCollection, eventId));
+    if (!snapshot.exists()) return null;
+    const mapped = mapRemoteEvent({ id: snapshot.id, ...(snapshot.data() as Record<string, unknown>) });
+    if (!mapped) return null;
+    return mergeEventIntoLocal(mapped);
+  } catch (error) {
+    console.error('Remote event fetch failed:', error);
+    return null;
+  }
+}
+
+export async function upsertUserProfile(input: {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL?: string;
+  createdAt?: string;
+}) {
+  const usersCollection = getUsersCollection();
+  if (!usersCollection) return;
+
+  const uid = input.uid.trim();
+  if (!uid) return;
+
+  const now = new Date().toISOString();
+  const payload: UserProfileRecord = {
+    uid,
+    email: normalizeEmail(input.email),
+    displayName: input.displayName || input.email,
+    photoURL: input.photoURL,
+    createdAt: input.createdAt || now,
+    updatedAt: now,
+  };
+
+  try {
+    await setDoc(doc(usersCollection, uid), payload, { merge: true });
+  } catch (error) {
+    console.error('User profile sync failed:', error);
+  }
 }
 
 function makeSecureToken(): string {
@@ -141,28 +299,43 @@ export function createEvent(input: {
     createdBy: input.createdBy,
     creatorName: input.creatorName,
     isPublic: true,
+    allowedEmails: [],
   };
 
   store.events.unshift(event);
   store.photosByEvent[event.id] = [];
   writeStore(store);
+  syncRemoteEvent(event);
   return event;
 }
 
-export function updateEvent(eventId: string, updates: Partial<Pick<EventRecord, 'name' | 'isPublic'>>): EventRecord | null {
+export function updateEvent(
+  eventId: string,
+  updates: Partial<Pick<EventRecord, 'name' | 'isPublic' | 'allowedEmails'>>,
+): EventRecord | null {
   const store = readStore();
   const idx = store.events.findIndex((event) => event.id === eventId);
   if (idx === -1) return null;
 
+  const nextAllowedEmails = updates.allowedEmails
+    ? dedupeEmails(updates.allowedEmails)
+    : dedupeEmails(store.events[idx].allowedEmails || []);
+
   const next: EventRecord = {
     ...store.events[idx],
     ...updates,
+    allowedEmails: nextAllowedEmails,
     updatedAt: new Date().toISOString(),
   };
 
   store.events[idx] = next;
   writeStore(store);
+  syncRemoteEvent(next);
   return next;
+}
+
+export function updateEventAllowedEmails(eventId: string, emails: string[]): EventRecord | null {
+  return updateEvent(eventId, { allowedEmails: dedupeEmails(emails) });
 }
 
 export function setEventDriveFolder(eventId: string, input: { driveFolderId: string; driveFolderLink?: string }): EventRecord | null {
@@ -179,6 +352,7 @@ export function setEventDriveFolder(eventId: string, input: { driveFolderId: str
 
   store.events[idx] = next;
   writeStore(store);
+  syncRemoteEvent(next);
   return next;
 }
 
@@ -209,6 +383,7 @@ export async function issueEventShareToken(
 
   store.events[idx] = next;
   writeStore(store);
+  syncRemoteEvent(next);
   return token;
 }
 
@@ -238,6 +413,23 @@ export function deleteEvent(eventId: string) {
   delete store.photosByEvent[eventId];
   store.activity = store.activity.filter((item) => item.eventId !== eventId);
   writeStore(store);
+  deleteRemoteEvent(eventId);
+}
+
+export async function syncEventsFromFirebaseForUser(userId: string): Promise<void> {
+  const eventsCollection = getEventsCollection();
+  if (!eventsCollection || !userId.trim()) return;
+
+  try {
+    const q = query(eventsCollection, where('createdBy', '==', userId));
+    const snapshot = await getDocs(q);
+    snapshot.forEach((item) => {
+      const mapped = mapRemoteEvent({ id: item.id, ...(item.data() as Record<string, unknown>) });
+      if (mapped) mergeEventIntoLocal(mapped);
+    });
+  } catch (error) {
+    console.error('Sync events from Firebase failed:', error);
+  }
 }
 
 export function listPhotos(eventId: string): PhotoRecord[] {

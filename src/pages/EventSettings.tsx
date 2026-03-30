@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { ArrowLeft, Save, Trash2, Shield, Globe, Lock, Settings, Loader2, AlertCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
-import { deleteEvent, getEvent, updateEvent } from '../lib/store';
+import { deleteEvent, getEventFromAnySource, normalizeEmail, updateEvent } from '../lib/store';
 import { EventFlowNav } from '../components/EventFlowNav';
 import { deleteDriveFolderWithContents } from '../lib/googleDrive';
 import { createSecureClientDashboardUrl, getPublicAppBaseUrl } from '../lib/shareAccess';
@@ -24,12 +24,13 @@ export function EventSettings() {
   
   const [name, setName] = useState('');
   const [isPublic, setIsPublic] = useState(true);
+  const [allowedEmailsInput, setAllowedEmailsInput] = useState('');
 
   useEffect(() => {
     if (!eventId) return;
 
     const fetchEvent = async () => {
-      const foundEvent = getEvent(eventId);
+      const foundEvent = await getEventFromAnySource(eventId);
       if (foundEvent) {
         if (foundEvent.createdBy !== user?.uid) {
           toast.error('Only the event creator can access settings');
@@ -39,6 +40,7 @@ export function EventSettings() {
         setEvent(foundEvent);
         setName(foundEvent.name);
         setIsPublic(foundEvent.isPublic !== false);
+        setAllowedEmailsInput((foundEvent.allowedEmails || []).join(', '));
       } else {
         toast.error('Event not found');
         navigate('/');
@@ -55,11 +57,27 @@ export function EventSettings() {
       return;
     }
 
+    const parsedAllowedEmails: string[] = Array.from(
+      new Set(
+        allowedEmailsInput
+          .split(/[\n,;]/)
+          .map((entry) => normalizeEmail(entry))
+          .filter(Boolean),
+      ),
+    );
+
+    const invalidEmails = parsedAllowedEmails.filter((email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email));
+    if (invalidEmails.length > 0) {
+      toast.error(`Invalid email: ${invalidEmails[0]}`);
+      return;
+    }
+
     setSaving(true);
     try {
       const updated = updateEvent(eventId!, {
         name: name.trim(),
         isPublic,
+        allowedEmails: parsedAllowedEmails,
       });
 
       if (updated) {
@@ -210,10 +228,26 @@ export function EventSettings() {
                 </div>
                 <div>
                   <p className="font-bold">Private Gallery</p>
-                  <p className="text-xs text-neutral-500">Only secure QR/share links can access this gallery.</p>
+                  <p className="text-xs text-neutral-500">Only granted Gmail accounts can access this gallery.</p>
                 </div>
               </button>
             </div>
+
+            {!isPublic && (
+              <div className="rounded-3xl border border-neutral-200 bg-white p-5 space-y-3">
+                <p className="text-sm font-semibold text-neutral-700">Allowed Gmail Accounts</p>
+                <p className="text-xs text-neutral-500">
+                  Add one or more emails separated by comma or new line. Only these Google accounts can open this private event.
+                </p>
+                <textarea
+                  value={allowedEmailsInput}
+                  onChange={(e) => setAllowedEmailsInput(e.target.value)}
+                  rows={4}
+                  placeholder="person1@gmail.com, person2@gmail.com"
+                  className="w-full px-4 py-3 bg-neutral-50 border border-neutral-200 rounded-2xl focus:ring-2 focus:ring-orange-500 focus:bg-white transition-all outline-none text-sm"
+                />
+              </div>
+            )}
           </section>
 
           <section className="space-y-4">
@@ -226,7 +260,7 @@ export function EventSettings() {
               <p className="text-sm text-neutral-600">
                 {isPublic
                   ? 'Public event: anyone can access with the event link. You can still share a secure client link if needed.'
-                  : 'Private event: guests must use a secure QR/link generated below.'}
+                  : 'Private event: guests must sign in with a granted Gmail and then open this QR/link.'}
               </p>
 
               <div className="flex flex-wrap gap-3">

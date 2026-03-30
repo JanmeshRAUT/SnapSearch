@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { clearGoogleToken, ensureGoogleAccessToken, fetchGoogleUserProfile } from '../lib/googleAuth';
+import { syncEventsFromFirebaseForUser, upsertUserProfile } from '../lib/store';
 
 const AUTH_USER_KEY = 'snapsearch.auth.user';
 
@@ -60,6 +61,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const existing = loadUser();
     if (existing) {
       setUser(existing);
+      void upsertUserProfile({
+        uid: existing.uid,
+        email: existing.email,
+        displayName: existing.displayName,
+        photoURL: existing.photoURL,
+        createdAt: existing.metadata.creationTime,
+      });
+      void syncEventsFromFirebaseForUser(existing.uid);
       return;
     }
 
@@ -77,6 +86,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     saveUser(nextUser);
     setUser(nextUser);
+    void upsertUserProfile({
+      uid: nextUser.uid,
+      email: nextUser.email,
+      displayName: nextUser.displayName,
+      photoURL: nextUser.photoURL,
+      createdAt: nextUser.metadata.creationTime,
+    });
+    void syncEventsFromFirebaseForUser(nextUser.uid);
   };
 
   const logout = async () => {
@@ -94,6 +111,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
     saveUser(updated);
     setUser(updated);
+    void upsertUserProfile({
+      uid: updated.uid,
+      email: updated.email,
+      displayName: updated.displayName,
+      photoURL: updated.photoURL,
+      createdAt: updated.metadata.creationTime,
+    });
   };
 
   return (

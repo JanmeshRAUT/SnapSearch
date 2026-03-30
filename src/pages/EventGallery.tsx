@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
-import { deletePhoto, deletePhotosBulk, getEvent, incrementUserStats, listPhotos, recordActivity, upsertDrivePhotos, validateEventShareToken } from '../lib/store';
+import { canUserAccessEvent, deletePhoto, deletePhotosBulk, getEventFromAnySource, incrementUserStats, listPhotos, recordActivity, upsertDrivePhotos } from '../lib/store';
 import { EventFlowNav } from '../components/EventFlowNav';
 import { deleteDriveFile, getDriveImageUrl, listDriveImagesInFolder } from '../lib/googleDrive';
 import { createSecureClientDashboardUrl } from '../lib/shareAccess';
@@ -16,7 +16,7 @@ export function EventGallery() {
   const { eventId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { user } = useAuth();
+  const { user, login } = useAuth();
   const [event, setEvent] = useState<any>(null);
   const [photos, setPhotos] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -35,16 +35,17 @@ export function EventGallery() {
     if (!eventId) return;
 
     const fetchEvent = async () => {
-      const foundEvent = getEvent(eventId);
+      const foundEvent = await getEventFromAnySource(eventId);
       if (foundEvent) {
-        if (foundEvent.isPublic === false && foundEvent.createdBy !== user?.uid) {
-          const tokenFromLink = new URLSearchParams(location.search).get('token') || '';
-          const hasAccess = await validateEventShareToken(eventId, tokenFromLink);
-          if (!hasAccess) {
-            toast.error('This is a private event. Use a valid secure QR/share link.');
-            navigate('/client');
+        if (!canUserAccessEvent(foundEvent, { uid: user?.uid, email: user?.email })) {
+          if (!user) {
+            toast.info('Private event: please login with your granted Gmail account.');
+            await login();
             return;
           }
+          toast.error('Your Gmail does not have access to this private event.');
+          navigate('/client');
+          return;
         }
 
         setEvent(foundEvent);
@@ -57,7 +58,7 @@ export function EventGallery() {
     };
 
     fetchEvent();
-  }, [eventId, location.search, navigate, user?.uid]);
+  }, [eventId, location.search, login, navigate, user?.email, user?.uid]);
 
   useEffect(() => {
     if (!eventId || !event?.driveFolderId) return;
@@ -197,11 +198,29 @@ export function EventGallery() {
     const zip = new JSZip();
     const folder = zip.folder(`${event?.name || 'event'}-photos`);
 
+    const urlToBlob = async (url: string): Promise<Blob> => {
+      if (url.startsWith('data:')) {
+        const response = await fetch(url);
+        return response.blob();
+      }
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch image: ${response.status}`);
+      }
+      return response.blob();
+    };
+
     try {
       for (let i = 0; i < filteredPhotos.length; i++) {
         const photo = filteredPhotos[i];
-        const base64Data = photo.url.split(',')[1];
-        folder?.file(`photo-${photo.id}.jpg`, base64Data, { base64: true });
+        try {
+          const blob = await urlToBlob(photo.url);
+          const ext = blob.type.includes('png') ? 'png' : 'jpg';
+          folder?.file(`photo-${photo.id}.${ext}`, blob);
+        } catch (error) {
+          console.error('Skipped photo during zip build:', photo.id, error);
+        }
       }
 
       const content = await zip.generateAsync({ type: 'blob' });
