@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { collection, query, where, getDocs, orderBy } from 'firebase/firestore';
-import { db } from '../firebase';
 import { Link, useNavigate } from 'react-router-dom';
 import { User, Mail, Calendar, Grid, ArrowRight, LogOut, Settings, Shield, UserCheck, Loader2, Camera } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
+import { listEventsByCreator } from '../lib/store';
 
 export function Profile() {
   const { user, logout, updateProfile } = useAuth();
@@ -15,6 +14,9 @@ export function Profile() {
   const [isEditing, setIsEditing] = useState(false);
   const [newName, setNewName] = useState(user?.displayName || '');
   const [updating, setUpdating] = useState(false);
+  const memberSince = user?.metadata.creationTime ? new Date(user.metadata.creationTime).toLocaleDateString() : 'Unknown';
+  const totalEvents = myEvents.length;
+  const publicEvents = myEvents.filter((event) => event.isPublic !== false).length;
 
   useEffect(() => {
     if (!user) {
@@ -24,13 +26,7 @@ export function Profile() {
 
     const fetchMyEvents = async () => {
       try {
-        const q = query(
-          collection(db, 'events'),
-          where('createdBy', '==', user.uid),
-          orderBy('createdAt', 'desc')
-        );
-        const snapshot = await getDocs(q);
-        setMyEvents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        setMyEvents(listEventsByCreator(user.uid));
       } catch (error) {
         console.error('Fetch events error:', error);
         toast.error('Failed to load your events');
@@ -63,81 +59,92 @@ export function Profile() {
   if (!user) return null;
 
   return (
-    <div className="max-w-6xl mx-auto space-y-12 pb-32">
+    <div className="w-full max-w-7xl mx-auto space-y-8 sm:space-y-10 pb-24 sm:pb-32">
       {/* Profile Header */}
-      <div className="relative h-48 sm:h-64 bg-gradient-to-r from-orange-500 to-orange-600 rounded-[3rem] overflow-hidden shadow-2xl">
-        <div className="absolute inset-0 bg-black/10 backdrop-blur-sm" />
-        <div className="absolute -bottom-12 left-8 sm:left-12 flex items-end gap-6">
-          <div className="relative group">
+      <div className="relative overflow-hidden rounded-[2rem] border border-orange-200 bg-gradient-to-r from-orange-500 via-orange-500 to-amber-500 p-5 sm:p-8 shadow-xl">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.35),transparent_45%)]" />
+        <div className="relative grid grid-cols-1 gap-5 md:grid-cols-[auto_1fr_auto] md:items-end">
+          <div className="relative group w-fit">
             {user.photoURL ? (
               <img 
                 src={user.photoURL} 
                 alt={user.displayName || ''} 
-                className="w-32 h-32 sm:w-40 sm:h-40 rounded-[2.5rem] border-8 border-white shadow-2xl object-cover"
+                className="w-24 h-24 sm:w-28 sm:h-28 rounded-3xl border-4 border-white/80 shadow-2xl object-cover"
               />
             ) : (
-              <div className="w-32 h-32 sm:w-40 sm:h-40 rounded-[2.5rem] border-8 border-white bg-neutral-100 flex items-center justify-center shadow-2xl">
-                <User className="w-16 h-16 text-neutral-300" />
+              <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-3xl border-4 border-white/80 bg-white/90 flex items-center justify-center shadow-2xl">
+                <User className="w-10 h-10 text-neutral-300" />
               </div>
             )}
-            <div className="absolute inset-0 bg-black/40 rounded-[2.5rem] opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer">
-              <Camera className="w-8 h-8 text-white" />
+            <div className="absolute inset-0 bg-black/35 rounded-3xl opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer">
+              <Camera className="w-6 h-6 text-white" />
             </div>
           </div>
-          <div className="pb-4 space-y-1">
-            <h1 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight drop-shadow-md">
+
+          <div className="space-y-2 md:pb-1">
+            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-orange-100">Personal Workspace</p>
+            <h1 className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight drop-shadow-md break-words">
               {user.displayName || 'Anonymous User'}
             </h1>
-            <p className="text-white/80 font-medium flex items-center gap-2">
+            <p className="text-white/90 text-sm sm:text-base font-medium flex items-center gap-2 break-all">
               <Mail className="w-4 h-4" /> {user.email}
             </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 md:w-[290px]">
+            <div className="rounded-2xl bg-white/20 backdrop-blur-sm p-3 text-white border border-white/20">
+              <p className="text-[10px] uppercase tracking-[0.14em] text-orange-100">Total Events</p>
+              <p className="text-2xl font-extrabold leading-tight">{totalEvents}</p>
+            </div>
+            <div className="rounded-2xl bg-white/20 backdrop-blur-sm p-3 text-white border border-white/20">
+              <p className="text-[10px] uppercase tracking-[0.14em] text-orange-100">Public Events</p>
+              <p className="text-2xl font-extrabold leading-tight">{publicEvents}</p>
+            </div>
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 pt-8">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8">
         {/* Sidebar Info */}
-        <div className="lg:col-span-4 space-y-8">
-          <div className="bg-white p-8 rounded-[3rem] border border-neutral-100 shadow-xl space-y-8">
-            <h3 className="font-bold text-xl flex items-center gap-2">
+        <div className="lg:col-span-4 space-y-6">
+          <div className="bg-white p-6 sm:p-7 rounded-3xl border border-neutral-200 shadow-sm space-y-7">
+            <h3 className="font-bold text-lg sm:text-xl flex items-center gap-2">
               <Shield className="w-6 h-6 text-orange-500" />
               Account Details
             </h3>
             
-            <div className="space-y-6">
-              <div className="flex items-center gap-4">
-                <div className="p-3 bg-neutral-50 rounded-2xl">
+            <div className="space-y-5">
+              <div className="flex items-center gap-3 rounded-2xl border border-neutral-100 p-4 bg-neutral-50/60">
+                <div className="p-2.5 bg-white rounded-xl border border-neutral-100">
                   <UserCheck className="w-5 h-5 text-neutral-400" />
                 </div>
-                <div>
+                <div className="min-w-0">
                   <p className="text-xs text-neutral-400 font-bold uppercase tracking-wider">User ID</p>
-                  <p className="text-sm font-mono text-neutral-600 truncate max-w-[150px]">{user.uid}</p>
+                  <p className="text-sm font-mono text-neutral-600 truncate">{user.uid}</p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-4">
-                <div className="p-3 bg-neutral-50 rounded-2xl">
+              <div className="flex items-center gap-3 rounded-2xl border border-neutral-100 p-4 bg-neutral-50/60">
+                <div className="p-2.5 bg-white rounded-xl border border-neutral-100">
                   <Calendar className="w-5 h-5 text-neutral-400" />
                 </div>
                 <div>
                   <p className="text-xs text-neutral-400 font-bold uppercase tracking-wider">Member Since</p>
-                  <p className="text-sm font-medium text-neutral-600">
-                    {user.metadata.creationTime ? new Date(user.metadata.creationTime).toLocaleDateString() : 'Unknown'}
-                  </p>
+                  <p className="text-sm font-medium text-neutral-600">{memberSince}</p>
                 </div>
               </div>
             </div>
 
-            <div className="pt-8 border-t border-neutral-50 space-y-3">
+            <div className="pt-4 border-t border-neutral-100 space-y-3">
               <button
                 onClick={() => setIsEditing(true)}
-                className="w-full py-4 bg-neutral-100 text-neutral-600 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-neutral-200 transition-all"
+                className="w-full py-3.5 bg-neutral-900 text-white rounded-2xl font-semibold flex items-center justify-center gap-2 hover:bg-neutral-800 transition-all"
               >
                 <Settings className="w-5 h-5" /> Edit Profile
               </button>
               <button
                 onClick={logout}
-                className="w-full py-4 bg-red-50 text-red-500 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-red-100 transition-all"
+                className="w-full py-3.5 bg-red-50 text-red-600 rounded-2xl font-semibold flex items-center justify-center gap-2 hover:bg-red-100 transition-all"
               >
                 <LogOut className="w-5 h-5" /> Logout
               </button>
@@ -146,7 +153,7 @@ export function Profile() {
         </div>
 
         {/* Main Content: My Events */}
-        <div className="lg:col-span-8 space-y-8">
+        <div className="lg:col-span-8 space-y-6">
           <div className="flex items-center justify-between">
             <h3 className="font-bold text-2xl flex items-center gap-3">
               <Grid className="w-7 h-7 text-orange-500" />
@@ -173,7 +180,7 @@ export function Profile() {
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: index * 0.1 }}
-                    className="group bg-white p-6 rounded-[2.5rem] border border-neutral-100 shadow-lg hover:shadow-2xl transition-all"
+                    className="group bg-white p-6 rounded-3xl border border-neutral-200 shadow-sm hover:shadow-lg transition-all"
                   >
                     <div className="space-y-4">
                       <div className="flex items-start justify-between">
@@ -191,7 +198,7 @@ export function Profile() {
                           {event.isPublic !== false ? 'Public' : 'Private'}
                         </div>
                       </div>
-                      
+
                       <div className="flex items-center justify-between pt-4 border-t border-neutral-50">
                         <Link
                           to={`/event/${event.id}`}

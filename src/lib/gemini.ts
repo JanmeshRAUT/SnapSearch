@@ -1,59 +1,148 @@
-import { GoogleGenAI, Type } from "@google/genai";
+type PhotoInput = { id: string; url: string };
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+interface FaceBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
-export async function findMatchingPhotos(selfieBase64s: string[], photos: { id: string, url: string }[]) {
-  if (photos.length === 0 || selfieBase64s.length === 0) return [];
+interface FaceMatch {
+  id: string;
+  score: number;
+}
 
-  // Prepare parts for Gemini
-  // Part 1: The selfies
-  const selfieParts = selfieBase64s.map((s, i) => ({
-    inlineData: {
-      data: s.split(',')[1],
-      mimeType: "image/jpeg"
-    }
-  }));
+declare global {
+  interface Window {
+    FaceDetector?: new (options?: { fastMode?: boolean; maxDetectedFaces?: number }) => {
+      detect: (source: HTMLImageElement) => Promise<Array<{ boundingBox: FaceBox }>>;
+    };
+  }
+}
 
-  // Part 2: The event photos
-  const photoParts = photos.map((p, index) => ({
-    inlineData: {
-      data: p.url.split(',')[1],
-      mimeType: "image/jpeg"
-    }
-  }));
+const EMBEDDING_SIZE = 32;
+const MATCH_THRESHOLD = 0.88;
 
-  const prompt = `
-    I am providing ${selfieBase64s.length} selfie(s) (the first ${selfieBase64s.length} image(s)) and a series of event photos.
-    Identify which of the event photos contain the person from the selfies. 
-    Even if the person appears in different angles or lighting in the selfies, use all of them as reference.
-    Return the indices (0-based) of the matching event photos as a JSON array of numbers.
-    If no matches are found, return an empty array [].
-    Only return the JSON array, nothing else.
-  `;
+function clamp(val: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, val));
+}
+
+function cosineSimilarity(a: number[], b: number[]) {
+  let dot = 0;
+  let magA = 0;
+  let magB = 0;
+
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+
+  if (magA === 0 || magB === 0) return 0;
+  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+}
+
+function normalizeVector(vec: number[]) {
+  const mean = vec.reduce((sum, v) => sum + v, 0) / vec.length;
+  const centered = vec.map((v) => v - mean);
+  const mag = Math.sqrt(centered.reduce((sum, v) => sum + v * v, 0)) || 1;
+  return centered.map((v) => v / mag);
+}
+
+async function loadImage(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.referrerPolicy = 'no-referrer';
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Image decode failed'));
+    image.src = url;
+  });
+}
+
+async function detectFaces(image: HTMLImageElement): Promise<FaceBox[]> {
+  if (!window.FaceDetector) {
+    return [];
+  }
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: {
-        parts: [
-          ...selfieParts,
-          ...photoParts,
-          { text: prompt }
-        ]
-      },
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: { type: Type.INTEGER }
-        }
-      }
-    });
+    const detector = new window.FaceDetector({ fastMode: true, maxDetectedFaces: 5 });
+    const detections = await detector.detect(image);
+    return detections.map((item) => item.boundingBox);
+  } catch {
+    return [];
+  }
+}
 
-    const matchingIndices = JSON.parse(response.text || "[]");
-    return matchingIndices.map((idx: number) => photos[idx]?.id).filter(Boolean);
+function getCenterCrop(image: HTMLImageElement): FaceBox {
+  const side = Math.min(image.width, image.height);
+  const x = (image.width - side) / 2;
+  const y = (image.height - side) / 2;
+  return { x, y, width: side, height: side };
+}
+
+function extractEmbedding(image: HTMLImageElement, face: FaceBox): number[] {
+  const canvas = document.createElement('canvas');
+  canvas.width = EMBEDDING_SIZE;
+  canvas.height = EMBEDDING_SIZE;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return [];
+
+  const x = clamp(face.x, 0, image.width);
+  const y = clamp(face.y, 0, image.height);
+  const width = clamp(face.width, 1, image.width - x);
+  const height = clamp(face.height, 1, image.height - y);
+
+  ctx.drawImage(image, x, y, width, height, 0, 0, EMBEDDING_SIZE, EMBEDDING_SIZE);
+  const pixels = ctx.getImageData(0, 0, EMBEDDING_SIZE, EMBEDDING_SIZE).data;
+
+  const vec: number[] = [];
+  for (let i = 0; i < pixels.length; i += 4) {
+    const gray = 0.299 * pixels[i] + 0.587 * pixels[i + 1] + 0.114 * pixels[i + 2];
+    vec.push(gray / 255);
+  }
+
+  return normalizeVector(vec);
+}
+
+async function getFaceEmbeddings(imageUrl: string): Promise<number[][]> {
+  const image = await loadImage(imageUrl);
+  const faces = await detectFaces(image);
+  const boxes = faces.length > 0 ? faces : [getCenterCrop(image)];
+  return boxes.map((face) => extractEmbedding(image, face)).filter((vec) => vec.length > 0);
+}
+
+function bestSimilarity(selfieEmbeddings: number[][], photoEmbeddings: number[][]): number {
+  let best = 0;
+  for (const selfie of selfieEmbeddings) {
+    for (const photo of photoEmbeddings) {
+      const score = cosineSimilarity(selfie, photo);
+      if (score > best) best = score;
+    }
+  }
+  return best;
+}
+
+export async function findMatchingPhotos(selfieBase64s: string[], photos: PhotoInput[]) {
+  if (photos.length === 0 || selfieBase64s.length === 0) return [];
+
+  try {
+    const selfieVectors = (await Promise.all(selfieBase64s.map((s) => getFaceEmbeddings(s)))).flat();
+    if (selfieVectors.length === 0) return [];
+
+    const matches: FaceMatch[] = [];
+    for (const photo of photos) {
+      const photoEmbeddings = await getFaceEmbeddings(photo.url);
+      if (photoEmbeddings.length === 0) continue;
+
+      const score = bestSimilarity(selfieVectors, photoEmbeddings);
+      if (score >= MATCH_THRESHOLD) {
+        matches.push({ id: photo.id, score });
+      }
+    }
+
+    return matches.sort((a, b) => b.score - a.score).map((match) => match.id);
   } catch (error) {
-    console.error("Gemini face search error:", error);
+    console.error('Local face match error:', error);
     throw error;
   }
 }

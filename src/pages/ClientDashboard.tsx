@@ -1,17 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { collection, query, where, getDocs, orderBy, limit, collectionGroup, getCountFromServer, doc, getDoc } from 'firebase/firestore';
-import { db } from '../firebase';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, Camera, Search, User, ArrowRight, Grid, Clock, Sparkles, Loader2, Plus, Download, Filter, Calendar } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
+import { countPhotosUploadedBy, getEvent, getUserStats, listActivityByUser, listEventsByCreator, listPhotos, validateEventShareToken } from '../lib/store';
 
 export function ClientDashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [recentEvents, setRecentEvents] = useState<any[]>([]);
   const [recentActivity, setRecentActivity] = useState<any[]>([]);
+  const [sharedEvent, setSharedEvent] = useState<any>(null);
+  const [sharedAccessError, setSharedAccessError] = useState('');
+  const [isSharedView, setIsSharedView] = useState(false);
   const [stats, setStats] = useState({
     totalEvents: 0,
     photosShared: 0,
@@ -21,48 +24,64 @@ export function ClientDashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!user) {
-      navigate('/');
-      return;
-    }
-
     const fetchDashboardData = async () => {
+      const query = new URLSearchParams(location.search);
+      const sharedEventId = query.get('event');
+      const sharedToken = query.get('token') || '';
+
+      if (sharedEventId) {
+        setIsSharedView(true);
+
+        const valid = await validateEventShareToken(sharedEventId, sharedToken);
+        if (!valid) {
+          setSharedAccessError('Invalid or expired secure link. Ask the organizer for a fresh QR code.');
+          setLoading(false);
+          return;
+        }
+
+        const found = getEvent(sharedEventId);
+        if (!found) {
+          setSharedAccessError('This event is not available in this browser yet. Open from the organizer system or connect a shared backend.');
+          setLoading(false);
+          return;
+        }
+
+        const eventPhotos = listPhotos(sharedEventId);
+        setSharedEvent(found);
+        setRecentEvents([found]);
+        setRecentActivity([]);
+        setStats({
+          totalEvents: 1,
+          photosShared: eventPhotos.length,
+          aiMatches: 0,
+          downloads: 0,
+        });
+        setLoading(false);
+        return;
+      }
+
+      if (!user) {
+        navigate('/');
+        return;
+      }
+
       try {
         // 1. Fetch events created by user
-        const eventsQuery = query(
-          collection(db, 'events'),
-          where('createdBy', '==', user.uid),
-          orderBy('createdAt', 'desc')
-        );
-        const eventsSnapshot = await getDocs(eventsQuery);
-        const eventsData = eventsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+        const eventsData = listEventsByCreator(user.uid);
         setRecentEvents(eventsData.slice(0, 3));
 
         // 2. Real Stats
         // Total Events
         const totalEvents = eventsData.length;
 
-        // Photos Shared (Photos uploaded by this user across ALL events)
-        const photosQuery = query(
-          collectionGroup(db, 'photos'),
-          where('uploadedBy', '==', user.uid)
-        );
-        const photosCountSnapshot = await getCountFromServer(photosQuery);
-        const photosShared = photosCountSnapshot.data().count;
+        // Photos Shared (photos uploaded by this user across all events)
+        const photosShared = countPhotosUploadedBy(user.uid);
 
-        // Fetch User Stats (Downloads and AI Matches)
-        const userStatsDoc = await getDoc(doc(db, 'user_stats', user.uid));
-        const userStatsData = userStatsDoc.exists() ? userStatsDoc.data() : { totalDownloads: 0, totalAiMatches: 0 };
+        // Fetch user stats (downloads and AI matches)
+        const userStatsData = getUserStats(user.uid);
         
         // 3. Fetch Recent Activity
-        const activityQuery = query(
-          collection(db, 'activity'),
-          where('userId', '==', user.uid),
-          orderBy('timestamp', 'desc'),
-          limit(5)
-        );
-        const activitySnapshot = await getDocs(activityQuery);
-        setRecentActivity(activitySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+        setRecentActivity(listActivityByUser(user.uid, 5));
 
         setStats({
           totalEvents,
@@ -80,20 +99,73 @@ export function ClientDashboard() {
     };
 
     fetchDashboardData();
-  }, [user, navigate]);
+  }, [location.search, navigate, user]);
 
-  if (!user) return null;
+  if (!user && !isSharedView) return null;
+
+  if (isSharedView) {
+    if (loading) {
+      return (
+        <div className="flex items-center justify-center min-h-[60vh]">
+          <Loader2 className="w-10 h-10 text-orange-500 animate-spin" />
+        </div>
+      );
+    }
+
+    if (sharedAccessError || !sharedEvent) {
+      return (
+        <div className="max-w-3xl mx-auto py-16">
+          <div className="bg-white border border-red-100 rounded-[2rem] p-8 sm:p-10 shadow-lg space-y-4">
+            <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-red-600">Private Access Required</h1>
+            <p className="text-neutral-600">{sharedAccessError || 'This event is private.'}</p>
+            <Link
+              to="/"
+              className="inline-flex items-center gap-2 px-6 py-3 bg-black text-white rounded-full font-bold hover:bg-neutral-800 transition-all"
+            >
+              Go to Home
+            </Link>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="w-full max-w-5xl mx-auto space-y-8 pb-24 sm:pb-32">
+        <div className="bg-white border border-neutral-100 rounded-[2.5rem] p-8 sm:p-10 shadow-lg space-y-3">
+          <p className="text-xs font-bold tracking-widest text-orange-500 uppercase">Secure Client Access</p>
+          <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight">{sharedEvent.name}</h1>
+          <p className="text-neutral-500">You opened this event using a secure QR link.</p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+          <div className="bg-white p-8 rounded-[2rem] border border-neutral-100 shadow-sm space-y-2">
+            <p className="text-sm font-bold text-neutral-400 uppercase tracking-wider">Total Photos</p>
+            <p className="text-4xl font-extrabold tracking-tight">{stats.photosShared}</p>
+          </div>
+          <div className="bg-white p-8 rounded-[2rem] border border-neutral-100 shadow-sm space-y-3">
+            <p className="text-sm font-bold text-neutral-400 uppercase tracking-wider">Actions</p>
+            <Link
+              to={`/event/${sharedEvent.id}${location.search || ''}`}
+              className="inline-flex items-center gap-2 px-6 py-3 bg-black text-white rounded-full font-bold hover:bg-neutral-800 transition-all"
+            >
+              Open Gallery <ArrowRight className="w-4 h-4" />
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="max-w-7xl mx-auto space-y-12 pb-32">
+    <div className="w-full max-w-7xl mx-auto space-y-8 sm:space-y-12 pb-24 sm:pb-32">
       {/* Dashboard Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div className="space-y-1">
-          <h1 className="text-4xl font-extrabold tracking-tight flex items-center gap-3">
+          <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight flex items-center gap-3">
             <LayoutDashboard className="w-10 h-10 text-orange-500" />
             Client Dashboard
           </h1>
-          <p className="text-neutral-500 text-lg">Welcome back, {user.displayName?.split(' ')[0] || 'User'}. Here's what's happening.</p>
+          <p className="text-neutral-500 text-base sm:text-lg">Welcome back, {user.displayName?.split(' ')[0] || 'User'}. Here's what's happening.</p>
         </div>
         <Link
           to="/"
@@ -226,7 +298,7 @@ export function ClientDashboard() {
                   <div className="space-y-1">
                     <p className="text-sm font-bold leading-tight">{activity.description}</p>
                     <p className="text-[10px] text-neutral-400 font-mono">
-                      {activity.timestamp?.toDate ? new Date(activity.timestamp.toDate()).toLocaleString() : 'Just now'}
+                      {activity.timestamp ? new Date(activity.timestamp).toLocaleString() : 'Just now'}
                     </p>
                   </div>
                 </motion.div>

@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { doc, getDoc, updateDoc, deleteDoc } from 'firebase/firestore';
-import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { ArrowLeft, Save, Trash2, Shield, Globe, Lock, Settings, Loader2, AlertCircle } from 'lucide-react';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
+import { deleteEvent, getEvent, updateEvent } from '../lib/store';
+import { EventFlowNav } from '../components/EventFlowNav';
+import { deleteDriveFolderWithContents } from '../lib/googleDrive';
 
 export function EventSettings() {
   const { eventId } = useParams();
@@ -23,18 +24,16 @@ export function EventSettings() {
     if (!eventId) return;
 
     const fetchEvent = async () => {
-      const docRef = doc(db, 'events', eventId);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data.createdBy !== user?.uid) {
+      const foundEvent = getEvent(eventId);
+      if (foundEvent) {
+        if (foundEvent.createdBy !== user?.uid) {
           toast.error('Only the event creator can access settings');
           navigate(`/event/${eventId}`);
           return;
         }
-        setEvent({ id: docSnap.id, ...data });
-        setName(data.name);
-        setIsPublic(data.isPublic !== false);
+        setEvent(foundEvent);
+        setName(foundEvent.name);
+        setIsPublic(foundEvent.isPublic !== false);
       } else {
         toast.error('Event not found');
         navigate('/');
@@ -53,10 +52,9 @@ export function EventSettings() {
 
     setSaving(true);
     try {
-      await updateDoc(doc(db, 'events', eventId!), {
+      updateEvent(eventId!, {
         name: name.trim(),
         isPublic,
-        updatedAt: new Date().toISOString()
       });
       toast.success('Settings updated');
     } catch (error) {
@@ -72,7 +70,15 @@ export function EventSettings() {
 
     setDeleting(true);
     try {
-      await deleteDoc(doc(db, 'events', eventId!));
+      if (event?.driveFolderId) {
+        try {
+          await deleteDriveFolderWithContents(event.driveFolderId);
+        } catch (error) {
+          console.error('Drive folder delete error:', error);
+        }
+      }
+
+      deleteEvent(eventId!);
       toast.success('Event deleted');
       navigate('/');
     } catch (error) {
@@ -91,20 +97,22 @@ export function EventSettings() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto space-y-8 pb-32">
-      <div className="space-y-1">
+    <div className="w-full max-w-7xl mx-auto space-y-6 sm:space-y-8 pb-24 sm:pb-32">
+      <EventFlowNav eventName={event?.name} />
+
+      <div className="rounded-3xl border border-neutral-200 bg-white p-5 sm:p-6 shadow-sm space-y-1">
         <Link to={`/event/${eventId}`} className="text-sm text-neutral-500 hover:text-orange-500 flex items-center gap-1 mb-4">
           <ArrowLeft className="w-4 h-4" /> Back to Gallery
         </Link>
-        <h1 className="text-4xl font-extrabold tracking-tight flex items-center gap-3">
+        <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight flex items-center gap-3">
           <Settings className="w-10 h-10 text-orange-500" />
           Event Settings
         </h1>
         <p className="text-neutral-500">Manage your event details and privacy settings.</p>
       </div>
 
-      <div className="bg-white rounded-[3rem] border border-neutral-100 shadow-xl overflow-hidden">
-        <div className="p-8 space-y-8">
+      <div className="bg-white rounded-3xl border border-neutral-200 shadow-sm overflow-hidden">
+        <div className="p-5 sm:p-8 space-y-8">
           {/* Basic Info */}
           <section className="space-y-4">
             <h3 className="text-lg font-bold flex items-center gap-2">
@@ -158,7 +166,7 @@ export function EventSettings() {
                 </div>
                 <div>
                   <p className="font-bold">Private Gallery</p>
-                  <p className="text-xs text-neutral-500">Only you can view and manage this gallery. (Coming soon: Invite only)</p>
+                  <p className="text-xs text-neutral-500">Only secure QR/share links can access this gallery.</p>
                 </div>
               </button>
             </div>
@@ -186,7 +194,7 @@ export function EventSettings() {
           </section>
         </div>
 
-        <div className="p-8 bg-neutral-50 border-t border-neutral-100 flex justify-end">
+        <div className="p-5 sm:p-8 bg-neutral-50 border-t border-neutral-100 flex justify-end">
           <button
             onClick={handleSave}
             disabled={saving}

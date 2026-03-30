@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
-import { doc, getDoc, collection, query, orderBy, onSnapshot, deleteDoc, writeBatch, increment, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase';
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { QRCodeSVG } from 'qrcode.react';
 import { Camera, Search, Share2, Upload, Grid, ArrowLeft, Download, Trash2, Tag, User, Filter, X as CloseIcon, Settings, CheckSquare, Square, AlertTriangle } from 'lucide-react';
@@ -9,10 +7,15 @@ import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import { deletePhoto, deletePhotosBulk, getEvent, incrementUserStats, listPhotos, recordActivity, upsertDrivePhotos, validateEventShareToken } from '../lib/store';
+import { EventFlowNav } from '../components/EventFlowNav';
+import { deleteDriveFile, getDriveImageUrl, listDriveImagesInFolder } from '../lib/googleDrive';
+import { createSecureClientDashboardUrl } from '../lib/shareAccess';
 
 export function EventGallery() {
   const { eventId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const [event, setEvent] = useState<any>(null);
   const [photos, setPhotos] = useState<any[]>([]);
@@ -25,15 +28,28 @@ export function EventGallery() {
   const [selectedPhotoIds, setSelectedPhotoIds] = useState<string[]>([]);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deletingBulk, setDeletingBulk] = useState(false);
+  const [shareUrl, setShareUrl] = useState('');
+  const [creatingShareUrl, setCreatingShareUrl] = useState(false);
 
   useEffect(() => {
     if (!eventId) return;
 
     const fetchEvent = async () => {
-      const docRef = doc(db, 'events', eventId);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        setEvent({ id: docSnap.id, ...docSnap.data() });
+      const foundEvent = getEvent(eventId);
+      if (foundEvent) {
+        if (foundEvent.isPublic === false && foundEvent.createdBy !== user?.uid) {
+          const tokenFromLink = new URLSearchParams(location.search).get('token') || '';
+          const hasAccess = await validateEventShareToken(eventId, tokenFromLink);
+          if (!hasAccess) {
+            toast.error('This is a private event. Use a valid secure QR/share link.');
+            navigate('/client');
+            return;
+          }
+        }
+
+        setEvent(foundEvent);
+        setPhotos(listPhotos(eventId));
+        setLoading(false);
       } else {
         toast.error('Event not found');
         navigate('/');
@@ -41,15 +57,32 @@ export function EventGallery() {
     };
 
     fetchEvent();
+  }, [eventId, location.search, navigate, user?.uid]);
 
-    const q = query(collection(db, 'events', eventId, 'photos'), orderBy('uploadedAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      setPhotos(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-      setLoading(false);
-    });
+  useEffect(() => {
+    if (!eventId || !event?.driveFolderId) return;
 
-    return () => unsubscribe();
-  }, [eventId, navigate]);
+    const syncDrivePhotos = async () => {
+      try {
+        const drivePhotos = await listDriveImagesInFolder(event.driveFolderId);
+        upsertDrivePhotos(
+          eventId,
+          drivePhotos.map((item) => ({
+            driveFileId: item.id,
+            driveFolderId: event.driveFolderId,
+            name: item.name,
+            url: item.publicUrl,
+            uploadedAt: item.createdTime,
+          })),
+        );
+        setPhotos(listPhotos(eventId));
+      } catch (error) {
+        console.error('Drive sync error:', error);
+      }
+    };
+
+    syncDrivePhotos();
+  }, [eventId, event?.driveFolderId]);
 
   // Extract unique tags
   const allTags = useMemo(() => {
@@ -85,13 +118,23 @@ export function EventGallery() {
   const handleBulkDelete = async () => {
     if (selectedPhotoIds.length === 0) return;
     setDeletingBulk(true);
-    const batch = writeBatch(db);
     
     try {
-      selectedPhotoIds.forEach(id => {
-        batch.delete(doc(db, 'events', eventId!, 'photos', id));
-      });
-      await batch.commit();
+      const currentPhotos = listPhotos(eventId!);
+      const driveIdsToDelete = currentPhotos
+        .filter((photo) => selectedPhotoIds.includes(photo.id) && photo.driveFileId)
+        .map((photo) => photo.driveFileId as string);
+
+      for (const driveFileId of driveIdsToDelete) {
+        try {
+          await deleteDriveFile(driveFileId);
+        } catch (error) {
+          console.error('Drive bulk delete file error:', error);
+        }
+      }
+
+      deletePhotosBulk(eventId!, selectedPhotoIds);
+      setPhotos(listPhotos(eventId!));
       toast.success(`Deleted ${selectedPhotoIds.length} photos`);
       setSelectedPhotoIds([]);
       setIsSelectMode(false);
@@ -104,7 +147,23 @@ export function EventGallery() {
     }
   };
 
-  const shareUrl = `${window.location.origin}/event/${eventId}`;
+  const openShareQr = async () => {
+    if (!eventId) return;
+
+    setShowQR(true);
+    setCreatingShareUrl(true);
+
+    try {
+      const secureUrl = await createSecureClientDashboardUrl(eventId);
+      setShareUrl(secureUrl);
+    } catch (error) {
+      console.error('Create share URL error:', error);
+      toast.error('Failed to create secure share link');
+      setShowQR(false);
+    } finally {
+      setCreatingShareUrl(false);
+    }
+  };
 
   const handleDownload = async (url: string, id: string) => {
     const link = document.createElement('a');
@@ -117,16 +176,12 @@ export function EventGallery() {
     // Increment download stat if user is logged in
     if (user) {
       try {
-        await setDoc(doc(db, 'user_stats', user.uid), {
-          totalDownloads: increment(1)
-        }, { merge: true });
+        incrementUserStats(user.uid, { totalDownloads: 1 });
 
-        // Record activity
-        await addDoc(collection(db, 'activity'), {
+        recordActivity({
           userId: user.uid,
           type: 'download',
           description: `Downloaded a photo from "${event?.name || 'event'}"`,
-          timestamp: serverTimestamp(),
           eventId: eventId,
           photoId: id
         });
@@ -156,16 +211,12 @@ export function EventGallery() {
       // Increment download stat
       if (user) {
         try {
-          await setDoc(doc(db, 'user_stats', user.uid), {
-            totalDownloads: increment(filteredPhotos.length)
-          }, { merge: true });
+          incrementUserStats(user.uid, { totalDownloads: filteredPhotos.length });
 
-          // Record activity
-          await addDoc(collection(db, 'activity'), {
+          recordActivity({
             userId: user.uid,
             type: 'download',
             description: `Bulk downloaded ${filteredPhotos.length} photos from "${event?.name || 'event'}"`,
-            timestamp: serverTimestamp(),
             eventId: eventId
           });
         } catch (error) {
@@ -192,7 +243,17 @@ export function EventGallery() {
     if (!window.confirm('Are you sure you want to delete this photo?')) return;
 
     try {
-      await deleteDoc(doc(db, 'events', eventId!, 'photos', photoId));
+      const target = photos.find((photo) => photo.id === photoId);
+      if (target?.driveFileId) {
+        try {
+          await deleteDriveFile(target.driveFileId);
+        } catch (error) {
+          console.error('Drive delete file error:', error);
+        }
+      }
+
+      deletePhoto(eventId!, photoId);
+      setPhotos(listPhotos(eventId!));
       toast.success('Photo deleted');
       if (selectedPhoto?.id === photoId) setSelectedPhoto(null);
     } catch (error) {
@@ -210,14 +271,16 @@ export function EventGallery() {
   }
 
   return (
-    <div className="space-y-8 pb-32">
+    <div className="space-y-6 sm:space-y-8 pb-24 sm:pb-32">
+      <EventFlowNav eventName={event?.name} />
+
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
         <div className="space-y-1">
           <Link to="/" className="text-sm text-neutral-500 hover:text-orange-500 flex items-center gap-1 mb-2">
             <ArrowLeft className="w-4 h-4" /> Back to Events
           </Link>
-          <h1 className="text-4xl font-extrabold tracking-tight">{event?.name}</h1>
-          <div className="flex items-center gap-4 text-sm text-neutral-500">
+          <h1 className="text-2xl sm:text-4xl font-extrabold tracking-tight break-words">{event?.name}</h1>
+          <div className="flex flex-wrap items-center gap-2 sm:gap-4 text-sm text-neutral-500">
             <span className="flex items-center gap-1">
               <User className="w-3 h-3" /> {event?.creatorName || 'Anonymous'}
             </span>
@@ -255,12 +318,14 @@ export function EventGallery() {
               <Trash2 className="w-4 h-4" /> Delete ({selectedPhotoIds.length})
             </button>
           )}
-          <button
-            onClick={() => setShowQR(true)}
-            className="flex-1 sm:flex-none px-5 py-3 bg-white border border-neutral-200 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-neutral-50 transition-all shadow-sm active:scale-95"
-          >
-            <Share2 className="w-4 h-4" /> Share QR
-          </button>
+          {user?.uid === event?.createdBy && (
+            <button
+              onClick={openShareQr}
+              className="flex-1 sm:flex-none px-5 py-3 bg-white border border-neutral-200 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-neutral-50 transition-all shadow-sm active:scale-95"
+            >
+              <Share2 className="w-4 h-4" /> Share QR
+            </button>
+          )}
           <button
             onClick={handleBulkDownload}
             disabled={downloadingAll || filteredPhotos.length === 0}
@@ -340,6 +405,13 @@ export function EventGallery() {
                   alt={photo.caption || "Event photo"}
                   className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
                   referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    if (!photo.driveFileId) return;
+                    const fallback = getDriveImageUrl(photo.driveFileId);
+                    if (e.currentTarget.src !== fallback) {
+                      e.currentTarget.src = fallback;
+                    }
+                  }}
                 />
                 
                 {isSelectMode && (
@@ -444,6 +516,13 @@ export function EventGallery() {
                   alt={selectedPhoto.caption || "Event photo"}
                   className="w-full h-full object-contain"
                   referrerPolicy="no-referrer"
+                  onError={(e) => {
+                    if (!selectedPhoto.driveFileId) return;
+                    const fallback = getDriveImageUrl(selectedPhoto.driveFileId);
+                    if (e.currentTarget.src !== fallback) {
+                      e.currentTarget.src = fallback;
+                    }
+                  }}
                 />
                 <button
                   onClick={() => setSelectedPhoto(null)}
@@ -560,12 +639,18 @@ export function EventGallery() {
               </div>
               
               <div className="bg-neutral-50 p-8 rounded-[2rem] inline-block border border-neutral-100 shadow-inner">
-                <QRCodeSVG value={shareUrl} size={200} />
+                {creatingShareUrl || !shareUrl ? (
+                  <div className="w-[200px] h-[200px] flex items-center justify-center text-sm text-neutral-500">
+                    Creating secure link...
+                  </div>
+                ) : (
+                  <QRCodeSVG value={shareUrl} size={200} />
+                )}
               </div>
 
               <div className="space-y-4">
                 <div className="p-4 bg-neutral-50 rounded-2xl text-[10px] font-mono break-all border border-neutral-100 text-neutral-400">
-                  {shareUrl}
+                  {shareUrl || 'Preparing secure URL...'}
                 </div>
                 <button
                   onClick={() => setShowQR(false)}

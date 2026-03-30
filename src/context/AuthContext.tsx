@@ -1,9 +1,44 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User, onAuthStateChanged, signInWithPopup, GoogleAuthProvider, signOut, updateProfile as firebaseUpdateProfile } from 'firebase/auth';
-import { auth } from '../firebase';
+import { clearGoogleToken, ensureGoogleAccessToken, fetchGoogleUserProfile } from '../lib/googleAuth';
+
+const AUTH_USER_KEY = 'snapsearch.auth.user';
+
+export interface AppUser {
+  uid: string;
+  displayName: string;
+  email: string;
+  photoURL?: string;
+  metadata: {
+    creationTime: string;
+  };
+}
+
+function loadUser(): AppUser | null {
+  const raw = localStorage.getItem(AUTH_USER_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as AppUser;
+  } catch {
+    return null;
+  }
+}
+
+function saveUser(user: AppUser | null) {
+  if (!user) {
+    localStorage.removeItem(AUTH_USER_KEY);
+    return;
+  }
+  localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+}
+
+function makeId() {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 interface AuthContextType {
-  user: User | null;
+  user: AppUser | null;
   loading: boolean;
   login: () => Promise<void>;
   logout: () => Promise<void>;
@@ -13,29 +48,52 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    return onAuthStateChanged(auth, (user) => {
-      setUser(user);
-      setLoading(false);
-    });
+    setUser(loadUser());
+    setLoading(false);
   }, []);
 
   const login = async () => {
-    const provider = new GoogleAuthProvider();
-    await signInWithPopup(auth, provider);
+    const existing = loadUser();
+    if (existing) {
+      setUser(existing);
+      return;
+    }
+
+    const accessToken = await ensureGoogleAccessToken(true);
+    const profile = await fetchGoogleUserProfile(accessToken);
+    const nextUser: AppUser = {
+      uid: profile.uid || makeId(),
+      displayName: profile.displayName,
+      email: profile.email,
+      photoURL: profile.photoURL,
+      metadata: {
+        creationTime: new Date().toISOString(),
+      },
+    };
+
+    saveUser(nextUser);
+    setUser(nextUser);
   };
 
   const logout = async () => {
-    await signOut(auth);
+    clearGoogleToken();
+    saveUser(null);
+    setUser(null);
   };
 
   const updateProfile = async (displayName: string, photoURL?: string) => {
-    if (!auth.currentUser) return;
-    await firebaseUpdateProfile(auth.currentUser, { displayName, photoURL });
-    setUser({ ...auth.currentUser }); // Trigger re-render
+    if (!user) return;
+    const updated: AppUser = {
+      ...user,
+      displayName,
+      photoURL: photoURL ?? user.photoURL,
+    };
+    saveUser(updated);
+    setUser(updated);
   };
 
   return (

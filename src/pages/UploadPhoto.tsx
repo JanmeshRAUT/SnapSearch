@@ -1,13 +1,14 @@
 import React, { useState, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useDropzone } from 'react-dropzone';
-import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { Upload, X, Image as ImageIcon, ArrowLeft, CheckCircle2, Tag, Type, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import imageCompression from 'browser-image-compression';
+import { addPhoto, getEvent, recordActivity, setEventDriveFolder } from '../lib/store';
+import { EventFlowNav } from '../components/EventFlowNav';
+import { createDriveFolderForEvent, uploadImageToDriveFolder } from '../lib/googleDrive';
 
 interface PhotoMetadata {
   id: string;
@@ -63,8 +64,27 @@ export function UploadPhoto() {
 
     setUploading(true);
     let successCount = 0;
+    let failedCount = 0;
 
     try {
+      const event = getEvent(eventId!);
+      if (!event) {
+        toast.error('Event not found');
+        setUploading(false);
+        return;
+      }
+
+      let driveFolderId = event.driveFolderId;
+      if (!driveFolderId) {
+        const createdFolder = await createDriveFolderForEvent(event.name);
+        driveFolderId = createdFolder.id;
+        setEventDriveFolder(event.id, {
+          driveFolderId: createdFolder.id,
+          driveFolderLink: createdFolder.webViewLink,
+        });
+        toast.success('Connected event folder to Google Drive');
+      }
+
       for (let i = 0; i < photoData.length; i++) {
         const photo = photoData[i];
         
@@ -81,54 +101,70 @@ export function UploadPhoto() {
           }
         };
         
-        let compressedFile;
+        let compressedFile: File | Blob;
         try {
           compressedFile = await imageCompression(photo.file, options);
-        } catch (e) {
-          setPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'error' } : p));
-          continue;
+        } catch {
+          // Fallback: continue with original file instead of aborting this photo.
+          compressedFile = photo.file;
         }
 
         // Update status to uploading
         setPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'uploading', progress: 60 } : p));
         
-        // 2. Convert to base64
-        const base64 = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result as string);
-          reader.readAsDataURL(compressedFile);
-        });
+        const uploadFile = compressedFile instanceof File
+          ? compressedFile
+          : new File([compressedFile], photo.file.name || `${photo.id}.jpg`, { type: compressedFile.type || 'image/jpeg' });
 
-        // 3. Save to Firestore
-        await addDoc(collection(db, 'events', eventId!, 'photos'), {
-          url: base64,
-          caption: photo.caption.trim(),
-          tags: photo.tags.split(',').map(t => t.trim()).filter(Boolean),
-          uploadedAt: serverTimestamp(),
-          uploadedBy: user.uid,
-          photographerName: user.displayName,
-          eventId: eventId
-        });
-        
-        // Update status to done
-        setPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'done', progress: 100 } : p));
-        successCount++;
+        try {
+          const driveFile = await uploadImageToDriveFolder({
+            file: uploadFile,
+            folderId: driveFolderId,
+            fileName: photo.file.name,
+          });
+
+          // 3. Save photo metadata after verified Drive upload
+          addPhoto(eventId!, {
+            url: driveFile.publicUrl,
+            caption: photo.caption.trim(),
+            tags: photo.tags.split(',').map(t => t.trim()).filter(Boolean),
+            uploadedBy: user.uid,
+            photographerName: user.displayName,
+            driveFileId: driveFile.id,
+            driveFolderId: driveFolderId,
+          });
+
+          // Update status to done
+          setPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'done', progress: 100 } : p));
+          successCount++;
+        } catch (fileError) {
+          console.error('Single file upload failed:', fileError);
+          setPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'error' } : p));
+          failedCount++;
+        }
+
         setOverallProgress(Math.round(((i + 1) / photoData.length) * 100));
       }
 
       // Record activity
       if (successCount > 0) {
-        await addDoc(collection(db, 'activity'), {
+        recordActivity({
           userId: user.uid,
           type: 'upload',
           description: `Uploaded ${successCount} photos to event`,
-          timestamp: serverTimestamp(),
           eventId: eventId
         });
       }
 
-      toast.success(`Successfully uploaded ${successCount} photos!`);
-      setTimeout(() => navigate(`/event/${eventId}`), 1500);
+      if (successCount > 0) {
+        toast.success(`Successfully uploaded ${successCount} photo${successCount > 1 ? 's' : ''}!`);
+        if (failedCount > 0) {
+          toast.info(`${failedCount} photo${failedCount > 1 ? 's' : ''} could not be uploaded.`);
+        }
+        setTimeout(() => navigate(`/event/${eventId}`), 1500);
+      } else {
+        toast.error('No photos were uploaded. Check Google Drive permission and folder access, then try again.');
+      }
     } catch (error) {
       console.error('Upload error:', error);
       toast.error('Failed to upload some photos');
@@ -138,19 +174,21 @@ export function UploadPhoto() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8 pb-32">
-      <div className="space-y-1">
+    <div className="w-full max-w-7xl mx-auto space-y-6 sm:space-y-8 pb-24 sm:pb-32">
+      <EventFlowNav />
+
+      <div className="rounded-3xl border border-neutral-200 bg-white p-5 sm:p-6 shadow-sm space-y-1">
         <Link to={`/event/${eventId}`} className="text-sm text-neutral-500 hover:text-orange-500 flex items-center gap-1 mb-2">
           <ArrowLeft className="w-4 h-4" /> Back to Gallery
         </Link>
-        <h1 className="text-3xl font-bold tracking-tight">Upload Photos</h1>
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Upload Photos</h1>
         <p className="text-neutral-500">Add your captures with captions and tags.</p>
       </div>
 
       <div
         {...getRootProps()}
         className={`
-          relative border-2 border-dashed rounded-[2.5rem] p-12 text-center transition-all cursor-pointer
+          relative border-2 border-dashed rounded-3xl p-6 sm:p-12 text-center transition-all cursor-pointer
           ${isDragActive ? 'border-orange-500 bg-orange-50' : 'border-neutral-200 hover:border-neutral-300 bg-white'}
           ${uploading ? 'pointer-events-none opacity-50' : ''}
         `}
@@ -195,7 +233,7 @@ export function UploadPhoto() {
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, scale: 0.95 }}
-                  className="bg-white p-4 rounded-3xl border border-neutral-100 shadow-sm flex flex-col sm:flex-row gap-6 group relative overflow-hidden"
+                  className="bg-white p-4 rounded-3xl border border-neutral-200 shadow-sm flex flex-col sm:flex-row gap-6 group relative overflow-hidden"
                 >
                   {/* Individual Progress Background */}
                   {uploading && photo.status !== 'done' && (
@@ -268,8 +306,8 @@ export function UploadPhoto() {
             </AnimatePresence>
           </div>
 
-          <div className="fixed bottom-8 left-0 right-0 px-4 z-40">
-            <div className="max-w-4xl mx-auto">
+          <div className="fixed bottom-4 sm:bottom-8 left-0 right-0 px-4 z-40">
+            <div className="w-full max-w-7xl mx-auto">
               {uploading ? (
                 <div className="bg-white p-6 rounded-[2.5rem] shadow-2xl border border-neutral-100 space-y-4">
                   <div className="flex justify-between items-center text-sm font-bold">

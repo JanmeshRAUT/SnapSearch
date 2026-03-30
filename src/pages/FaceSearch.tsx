@@ -1,7 +1,5 @@
 import React, { useState, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { collection, query, orderBy, getDocs, setDoc, doc, increment, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { findMatchingPhotos } from '../lib/gemini';
 import { Camera, Upload, ArrowLeft, Search, Sparkles, UserCheck, Grid, Download, X, Plus, Loader2, CheckCircle2 } from 'lucide-react';
@@ -9,6 +7,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import { toast } from 'sonner';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+import { incrementUserStats, listPhotos, recordActivity } from '../lib/store';
+import { EventFlowNav } from '../components/EventFlowNav';
 
 export function FaceSearch() {
   const { eventId } = useParams();
@@ -46,9 +46,7 @@ export function FaceSearch() {
 
     try {
       // 1. Fetch all photos for this event
-      const q = query(collection(db, 'events', eventId, 'photos'), orderBy('uploadedAt', 'desc'));
-      const snapshot = await getDocs(q);
-      const allPhotos = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
+      const allPhotos = listPhotos(eventId);
 
       if (allPhotos.length === 0) {
         toast.info('No photos in this event gallery yet.');
@@ -56,7 +54,7 @@ export function FaceSearch() {
         return;
       }
 
-      // 2. Call Gemini to find matches
+      // 2. Run local face matcher to find matches
       // Limit to first 20 photos for prototype performance/token limits
       const photoBatch = allPhotos.slice(0, 20);
       const matchingIds = await findMatchingPhotos(selfies, photoBatch.map(p => ({ id: p.id, url: p.url })));
@@ -70,16 +68,12 @@ export function FaceSearch() {
         // Increment AI Matches stat
         if (user) {
           try {
-            await setDoc(doc(db, 'user_stats', user.uid), {
-              totalAiMatches: increment(matchedPhotos.length)
-            }, { merge: true });
+            incrementUserStats(user.uid, { totalAiMatches: matchedPhotos.length });
 
-            // Record activity
-            await addDoc(collection(db, 'activity'), {
+            recordActivity({
               userId: user.uid,
               type: 'match',
               description: `Found ${matchedPhotos.length} matches in event "${eventId}"`,
-              timestamp: serverTimestamp(),
               eventId: eventId
             });
           } catch (error) {
@@ -91,7 +85,7 @@ export function FaceSearch() {
       }
     } catch (error) {
       console.error('Search error:', error);
-      toast.error('AI search failed. Please try again.');
+      toast.error('Face search failed. Please try again.');
     } finally {
       setSearching(false);
     }
@@ -108,16 +102,12 @@ export function FaceSearch() {
     // Increment download stat
     if (user) {
       try {
-        await setDoc(doc(db, 'user_stats', user.uid), {
-          totalDownloads: increment(1)
-        }, { merge: true });
+        incrementUserStats(user.uid, { totalDownloads: 1 });
 
-        // Record activity
-        await addDoc(collection(db, 'activity'), {
+        recordActivity({
           userId: user.uid,
           type: 'download',
           description: `Downloaded a matched photo from event "${eventId}"`,
-          timestamp: serverTimestamp(),
           eventId: eventId,
           photoId: id
         });
@@ -147,16 +137,12 @@ export function FaceSearch() {
       // Increment download stat
       if (user) {
         try {
-          await setDoc(doc(db, 'user_stats', user.uid), {
-            totalDownloads: increment(results.length)
-          }, { merge: true });
+          incrementUserStats(user.uid, { totalDownloads: results.length });
 
-          // Record activity
-          await addDoc(collection(db, 'activity'), {
+          recordActivity({
             userId: user.uid,
             type: 'download',
             description: `Bulk downloaded ${results.length} matched photos from event "${eventId}"`,
-            timestamp: serverTimestamp(),
             eventId: eventId
           });
         } catch (error) {
@@ -172,21 +158,23 @@ export function FaceSearch() {
   };
 
   return (
-    <div className="max-w-6xl mx-auto space-y-12 pb-32">
-      <div className="space-y-1 text-center max-w-2xl mx-auto">
+    <div className="w-full max-w-7xl mx-auto space-y-8 sm:space-y-12 pb-24 sm:pb-32">
+      <EventFlowNav />
+
+      <div className="rounded-3xl border border-neutral-200 bg-white p-5 sm:p-6 shadow-sm space-y-1 text-center max-w-3xl mx-auto px-1">
         <Link to={`/event/${eventId}`} className="text-sm text-neutral-500 hover:text-orange-500 inline-flex items-center gap-1 mb-4">
           <ArrowLeft className="w-4 h-4" /> Back to Gallery
         </Link>
-        <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl">Find Your <span className="text-orange-500">Memories</span></h1>
-        <p className="text-neutral-500 text-lg">
+        <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight">Find Your <span className="text-orange-500">Memories</span></h1>
+        <p className="text-neutral-500 text-base sm:text-lg">
           Our AI will scan the entire gallery to find every photo you're in.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-start">
         {/* Left Column: Selfie Upload */}
-        <div className="lg:col-span-4 space-y-8 lg:sticky lg:top-24">
-          <div className="bg-white p-8 rounded-[3rem] border border-neutral-100 shadow-xl space-y-8">
+        <div className="lg:col-span-4 space-y-6 lg:space-y-8 lg:sticky lg:top-24">
+          <div className="bg-white p-5 sm:p-8 rounded-3xl border border-neutral-200 shadow-sm space-y-8">
             <div className="flex items-center justify-between">
               <h3 className="font-bold text-xl flex items-center gap-2">
                 <UserCheck className="w-6 h-6 text-orange-500" />
@@ -287,7 +275,7 @@ export function FaceSearch() {
             )}
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-6">
             <AnimatePresence mode="popLayout">
               {results.map((photo, index) => (
                 <motion.div
@@ -302,7 +290,7 @@ export function FaceSearch() {
                     damping: 20,
                     delay: index * 0.05 
                   }}
-                  className="group relative aspect-square bg-neutral-100 rounded-[2.5rem] overflow-hidden shadow-md hover:shadow-2xl transition-all ring-1 ring-neutral-100"
+                  className="group relative aspect-square bg-neutral-100 rounded-3xl overflow-hidden shadow-sm hover:shadow-lg transition-all ring-1 ring-neutral-200"
                 >
                   <img
                     src={photo.url}

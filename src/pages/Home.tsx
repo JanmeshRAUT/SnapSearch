@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, deleteDoc, doc } from 'firebase/firestore';
-import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Calendar as CalendarIcon, ArrowRight, QrCode, Trash2 } from 'lucide-react';
+import { Plus, Calendar as CalendarIcon, ArrowRight, QrCode, Trash2, Upload, Search, Settings } from 'lucide-react';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
+import { createEvent, deleteEvent, listEvents, recordActivity, setEventDriveFolder } from '../lib/store';
+import { createDriveFolderForEvent, deleteDriveFolderWithContents } from '../lib/googleDrive';
 
 export function Home() {
   const { user, login } = useAuth();
@@ -15,10 +15,7 @@ export function Home() {
   const [eventName, setEventName] = useState('');
 
   useEffect(() => {
-    const q = query(collection(db, 'events'), orderBy('createdAt', 'desc'));
-    return onSnapshot(q, (snapshot) => {
-      setEvents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    });
+    setEvents(listEvents());
   }, []);
 
   const handleCreateEvent = async (e: React.FormEvent) => {
@@ -31,33 +28,42 @@ export function Home() {
     if (!eventName.trim()) return;
 
     try {
-      const docRef = await addDoc(collection(db, 'events'), {
-        name: eventName,
-        createdAt: serverTimestamp(),
+      const created = createEvent({
+        name: eventName.trim(),
         createdBy: user.uid,
         creatorName: user.displayName,
       });
-
-      // Record activity
-      await addDoc(collection(db, 'activity'), {
+      recordActivity({
         userId: user.uid,
         type: 'create_event',
-        description: `Created event "${eventName}"`,
-        timestamp: serverTimestamp(),
-        eventId: docRef.id
+        description: `Created event "${eventName.trim()}"`,
+        eventId: created.id,
       });
+
+      try {
+        const driveFolder = await createDriveFolderForEvent(created.name);
+        setEventDriveFolder(created.id, {
+          driveFolderId: driveFolder.id,
+          driveFolderLink: driveFolder.webViewLink,
+        });
+        toast.success('Google Drive folder created for this event');
+      } catch (driveError) {
+        console.error('Drive folder creation error:', driveError);
+        toast.info('Event created without Drive folder. Check Google permissions.');
+      }
 
       toast.success('Event created successfully!');
       setEventName('');
       setIsCreating(false);
-      navigate(`/event/${docRef.id}`);
+      setEvents(listEvents());
+      navigate(`/event/${created.id}`);
     } catch (error) {
       console.error('Error creating event:', error);
       toast.error('Failed to create event');
     }
   };
 
-  const handleDeleteEvent = async (e: React.MouseEvent, eventId: string, createdBy: string) => {
+  const handleDeleteEvent = async (e: React.MouseEvent, eventId: string, createdBy: string, driveFolderId?: string) => {
     e.stopPropagation();
     if (user?.uid !== createdBy) {
       toast.error('Only the creator can delete this event');
@@ -67,7 +73,16 @@ export function Home() {
     if (!window.confirm('Are you sure you want to delete this event and all its photos?')) return;
 
     try {
-      await deleteDoc(doc(db, 'events', eventId));
+      if (driveFolderId) {
+        try {
+          await deleteDriveFolderWithContents(driveFolderId);
+        } catch (error) {
+          console.error('Drive folder delete error:', error);
+        }
+      }
+
+      deleteEvent(eventId);
+      setEvents(listEvents());
       toast.success('Event deleted');
     } catch (error) {
       console.error('Delete error:', error);
@@ -76,12 +91,12 @@ export function Home() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto space-y-12">
-      <section className="text-center space-y-4 py-12">
+    <div className="w-full max-w-6xl mx-auto space-y-8 sm:space-y-12">
+      <section className="text-center space-y-4 py-8 sm:py-12">
         <motion.h1 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="text-5xl font-extrabold tracking-tight sm:text-6xl"
+          className="text-3xl font-extrabold tracking-tight sm:text-5xl lg:text-6xl"
         >
           Share Event Photos <span className="text-orange-500">Instantly</span>
         </motion.h1>
@@ -89,7 +104,7 @@ export function Home() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="text-xl text-neutral-500 max-w-2xl mx-auto"
+          className="text-base sm:text-xl text-neutral-500 max-w-2xl mx-auto"
         >
           Create an event, share the QR code, and let everyone find their photos using AI face search.
         </motion.p>
@@ -109,7 +124,7 @@ export function Home() {
               Create New Event
             </button>
           ) : (
-            <form onSubmit={handleCreateEvent} className="max-w-md mx-auto flex gap-2">
+            <form onSubmit={handleCreateEvent} className="max-w-md mx-auto flex flex-col sm:flex-row gap-2">
               <input
                 autoFocus
                 type="text"
@@ -121,7 +136,7 @@ export function Home() {
               />
               <button
                 type="submit"
-                className="px-8 py-4 bg-orange-500 text-white rounded-full font-bold hover:bg-orange-600 transition-colors shadow-lg"
+                className="px-8 py-4 bg-orange-500 text-white rounded-full font-bold hover:bg-orange-600 transition-colors shadow-lg whitespace-nowrap"
               >
                 Create
               </button>
@@ -136,6 +151,24 @@ export function Home() {
             <CalendarIcon className="w-6 h-6 text-orange-500" />
             Recent Events
           </h2>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          {[
+            { title: 'Create Event', desc: 'Start a new workspace for your occasion.', icon: CalendarIcon },
+            { title: 'Upload Photos', desc: 'Photographers and guests add images.', icon: Upload },
+            { title: 'Face Search', desc: 'Guests quickly find their moments.', icon: Search },
+            { title: 'Manage Settings', desc: 'Control access and sharing options.', icon: Settings },
+          ].map((step, idx) => (
+            <div key={step.title} className="rounded-2xl border border-neutral-200 bg-white p-4 sm:p-5">
+              <div className="flex items-start justify-between gap-3">
+                <step.icon className="w-5 h-5 text-orange-500 mt-0.5" />
+                <span className="text-xs font-bold text-neutral-400">0{idx + 1}</span>
+              </div>
+              <h3 className="mt-3 text-sm font-bold text-neutral-900">{step.title}</h3>
+              <p className="mt-1 text-xs text-neutral-500 leading-relaxed">{step.desc}</p>
+            </div>
+          ))}
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
@@ -156,7 +189,7 @@ export function Home() {
                   <div className="flex items-center gap-2">
                     {user?.uid === event.createdBy && (
                       <button
-                        onClick={(e) => handleDeleteEvent(e, event.id, event.createdBy)}
+                        onClick={(e) => handleDeleteEvent(e, event.id, event.createdBy, event.driveFolderId)}
                         className="p-2 text-neutral-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
                       >
                         <Trash2 className="w-4 h-4" />

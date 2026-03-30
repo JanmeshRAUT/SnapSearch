@@ -16,7 +16,7 @@ export default function App() {
       <Router>
         <div className="min-h-screen bg-neutral-50 text-neutral-900 font-sans">
           <Navbar />
-          <main className="container mx-auto px-4 py-8">
+          <main className="mx-auto w-full max-w-[1720px] px-4 py-6 sm:px-6 sm:py-8 lg:px-10">
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/event/:eventId" element={<EventGallery />} />
