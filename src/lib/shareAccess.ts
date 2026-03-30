@@ -40,16 +40,9 @@ export async function createSecureClientDashboardUrl(
     throw new Error('Missing event id for secure share link.');
   }
 
-  const token = await issueEventShareToken(eventId, { rotate: options?.rotate === true });
-  if (!token) {
-    throw new Error('Unable to create secure share link for this event.');
-  }
+  // Keep token issuance for compatibility with existing links/history.
+  await issueEventShareToken(eventId, { rotate: options?.rotate === true });
 
   const base = getPublicAppBaseUrl();
-  const params = new URLSearchParams({
-    event: eventId,
-    token,
-  });
-
-  return `${base}/client?${params.toString()}`;
+  return `${base}/event/${eventId}`;
 }

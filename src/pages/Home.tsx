@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { Plus, Calendar as CalendarIcon, ArrowRight, QrCode, Trash2, Upload, Search, Settings } from 'lucide-react';
 import { motion } from 'motion/react';
 import { toast } from 'sonner';
-import { createEvent, deleteEvent, listEvents, recordActivity, setEventDriveFolder } from '../lib/store';
+import { createEvent, deleteEvent, listEventsByCreator, recordActivity, setEventDriveFolder } from '../lib/store';
 import { createDriveFolderForEvent, deleteDriveFolderWithContents } from '../lib/googleDrive';
 
 export function Home() {
@@ -15,8 +15,12 @@ export function Home() {
   const [eventName, setEventName] = useState('');
 
   useEffect(() => {
-    setEvents(listEvents());
-  }, []);
+    if (!user) {
+      setEvents([]);
+      return;
+    }
+    setEvents(listEventsByCreator(user.uid));
+  }, [user]);
 
   const handleCreateEvent = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -55,7 +59,7 @@ export function Home() {
       toast.success('Event created successfully!');
       setEventName('');
       setIsCreating(false);
-      setEvents(listEvents());
+      setEvents(listEventsByCreator(user.uid));
       navigate(`/event/${created.id}`);
     } catch (error) {
       console.error('Error creating event:', error);
@@ -82,7 +86,11 @@ export function Home() {
       }
 
       deleteEvent(eventId);
-      setEvents(listEvents());
+      if (user) {
+        setEvents(listEventsByCreator(user.uid));
+      } else {
+        setEvents([]);
+      }
       toast.success('Event deleted');
     } catch (error) {
       console.error('Delete error:', error);

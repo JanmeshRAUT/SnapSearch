@@ -62,8 +62,17 @@ interface StoreSchema {
 }
 
 const STORE_KEY = 'snapsearch.store.v1';
+let activeStoreNamespace = 'anon';
 const EVENTS_COLLECTION = 'events';
 const USERS_COLLECTION = 'users';
+
+function getStoreKey() {
+  return `${STORE_KEY}.${activeStoreNamespace}`;
+}
+
+export function setStoreNamespace(namespace: string | null | undefined) {
+  activeStoreNamespace = (namespace || 'anon').trim() || 'anon';
+}
 
 function makeId() {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -81,7 +90,8 @@ function createEmptyStore(): StoreSchema {
 }
 
 function readStore(): StoreSchema {
-  const raw = localStorage.getItem(STORE_KEY);
+  const scopedKey = getStoreKey();
+  const raw = localStorage.getItem(scopedKey) ?? localStorage.getItem(STORE_KEY);
   if (!raw) return createEmptyStore();
 
   try {
@@ -98,7 +108,12 @@ function readStore(): StoreSchema {
 }
 
 function writeStore(next: StoreSchema) {
-  localStorage.setItem(STORE_KEY, JSON.stringify(next));
+  localStorage.setItem(getStoreKey(), JSON.stringify(next));
+}
+
+export function clearLocalStoreCache() {
+  localStorage.removeItem(getStoreKey());
+  localStorage.removeItem(STORE_KEY);
 }
 
 function getEventsCollection() {
@@ -429,6 +444,15 @@ export async function syncEventsFromFirebaseForUser(userId: string): Promise<voi
     });
   } catch (error) {
     console.error('Sync events from Firebase failed:', error);
+  }
+}
+
+export async function syncLocalEventsToFirebaseForUser(userId: string): Promise<void> {
+  if (!userId.trim()) return;
+  const localEvents = listEventsByCreator(userId);
+
+  for (const event of localEvents) {
+    syncRemoteEvent(event);
   }
 }
 

@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { clearGoogleToken, ensureGoogleAccessToken, fetchGoogleUserProfile } from '../lib/googleAuth';
-import { syncEventsFromFirebaseForUser, upsertUserProfile } from '../lib/store';
+import { clearLocalStoreCache, setStoreNamespace, syncEventsFromFirebaseForUser, syncLocalEventsToFirebaseForUser, upsertUserProfile } from '../lib/store';
 
 const AUTH_USER_KEY = 'snapsearch.auth.user';
 
@@ -53,13 +53,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setUser(loadUser());
+    const existing = loadUser();
+    setStoreNamespace(existing?.uid || null);
+    setUser(existing);
     setLoading(false);
   }, []);
 
   const login = async () => {
     const existing = loadUser();
     if (existing) {
+      setStoreNamespace(existing.uid);
       setUser(existing);
       void upsertUserProfile({
         uid: existing.uid,
@@ -68,6 +71,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         photoURL: existing.photoURL,
         createdAt: existing.metadata.creationTime,
       });
+      void syncLocalEventsToFirebaseForUser(existing.uid);
       void syncEventsFromFirebaseForUser(existing.uid);
       return;
     }
@@ -85,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     saveUser(nextUser);
+    setStoreNamespace(nextUser.uid);
     setUser(nextUser);
     void upsertUserProfile({
       uid: nextUser.uid,
@@ -93,11 +98,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       photoURL: nextUser.photoURL,
       createdAt: nextUser.metadata.creationTime,
     });
+    void syncLocalEventsToFirebaseForUser(nextUser.uid);
     void syncEventsFromFirebaseForUser(nextUser.uid);
   };
 
   const logout = async () => {
     clearGoogleToken();
+    clearLocalStoreCache();
+    setStoreNamespace(null);
     saveUser(null);
     setUser(null);
   };

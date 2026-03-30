@@ -250,6 +250,49 @@ export function EventGallery() {
     }
   };
 
+  const handleDownloadSelected = async () => {
+    if (selectedPhotoIds.length === 0) return;
+    setDownloadingAll(true);
+    const zip = new JSZip();
+    const folder = zip.folder(`${event?.name || 'event'}-selected-photos`);
+
+    const urlToBlob = async (url: string): Promise<Blob> => {
+      if (url.startsWith('data:')) {
+        const response = await fetch(url);
+        return response.blob();
+      }
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch image: ${response.status}`);
+      }
+      return response.blob();
+    };
+
+    try {
+      const selected = photos.filter((photo) => selectedPhotoIds.includes(photo.id));
+      for (let i = 0; i < selected.length; i++) {
+        const photo = selected[i];
+        try {
+          const blob = await urlToBlob(photo.url);
+          const ext = blob.type.includes('png') ? 'png' : 'jpg';
+          folder?.file(`photo-${photo.id}.${ext}`, blob);
+        } catch (error) {
+          console.error('Skipped selected photo during zip build:', photo.id, error);
+        }
+      }
+
+      const content = await zip.generateAsync({ type: 'blob' });
+      saveAs(content, `${event?.name || 'event'}-selected-photos.zip`);
+      toast.success('Selected photos download started!');
+    } catch (error) {
+      console.error('Selected download error:', error);
+      toast.error('Failed to create selected zip file');
+    } finally {
+      setDownloadingAll(false);
+    }
+  };
+
   const handleDelete = async (photoId: string, uploadedBy: string) => {
     const isCreator = user?.uid === event?.createdBy;
     const isPhotographer = user?.uid === uploadedBy;
@@ -329,6 +372,20 @@ export function EventGallery() {
             {isSelectMode ? <CheckSquare className="w-4 h-4" /> : <Square className="w-4 h-4" />}
             {isSelectMode ? 'Cancel Selection' : 'Select'}
           </button>
+          {isSelectMode && selectedPhotoIds.length > 0 && (
+            <button
+              onClick={handleDownloadSelected}
+              disabled={downloadingAll}
+              className="flex-1 sm:flex-none px-5 py-3 bg-white border border-neutral-200 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-neutral-50 transition-all shadow-sm active:scale-95 disabled:opacity-50"
+            >
+              {downloadingAll ? (
+                <div className="w-4 h-4 border-2 border-neutral-300 border-t-neutral-800 rounded-full animate-spin" />
+              ) : (
+                <Download className="w-4 h-4" />
+              )}
+              Download Selected ({selectedPhotoIds.length})
+            </button>
+          )}
           {isSelectMode && selectedPhotoIds.length > 0 && (
             <button
               onClick={() => setShowDeleteConfirm(true)}
@@ -654,7 +711,7 @@ export function EventGallery() {
             >
               <div className="space-y-2">
                 <h3 className="text-3xl font-extrabold tracking-tight">Event QR</h3>
-                <p className="text-neutral-500">Scan to join the gallery</p>
+                <p className="text-neutral-500">Scan to open this event gallery</p>
               </div>
               
               <div className="bg-neutral-50 p-8 rounded-[2rem] inline-block border border-neutral-100 shadow-inner">
