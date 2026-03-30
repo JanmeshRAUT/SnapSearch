@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { clearGoogleToken, ensureGoogleAccessToken, fetchGoogleUserProfile, getStoredAccessToken } from '../lib/googleAuth';
-import { signInFirebaseWithGoogleAccessToken } from '../lib/firebase';
-import { clearLocalStoreCache, setStoreNamespace, syncEventsFromFirebaseForUser, syncLocalEventsToFirebaseForUser, upsertUserProfile } from '../lib/store';
+import { clearLocalStoreCache, setStoreNamespace } from '../lib/store';
 
 const AUTH_USER_KEY = 'snapsearch.auth.user';
 
@@ -57,22 +56,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const existing = loadUser();
     setStoreNamespace(existing?.uid || null);
     setUser(existing);
+
+    // Keep Drive auth warm when possible.
     if (existing) {
-      const cachedToken = getStoredAccessToken();
-      if (cachedToken) {
-        void signInFirebaseWithGoogleAccessToken(cachedToken).catch((error) => {
-          console.error('Firebase auth bootstrap failed:', error);
-        });
-      }
-      void upsertUserProfile({
-        uid: existing.uid,
-        email: existing.email,
-        displayName: existing.displayName,
-        photoURL: existing.photoURL,
-        createdAt: existing.metadata.creationTime,
+      void ensureGoogleAccessToken(false).catch((error) => {
+        console.error('Silent token refresh failed:', error);
       });
-      void syncLocalEventsToFirebaseForUser(existing.uid);
-      void syncEventsFromFirebaseForUser(existing.uid);
     }
     setLoading(false);
   }, []);
@@ -83,38 +72,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setStoreNamespace(existing.uid);
       setUser(existing);
 
-      const cachedToken = getStoredAccessToken();
-      if (cachedToken) {
-        void signInFirebaseWithGoogleAccessToken(cachedToken).catch((error) => {
-          console.error('Firebase auth for existing user failed:', error);
-        });
-      } else {
+      if (!getStoredAccessToken()) {
         void ensureGoogleAccessToken(false)
-          .then((token) => signInFirebaseWithGoogleAccessToken(token))
           .catch((error) => {
             console.error('Silent token refresh for existing user failed:', error);
           });
       }
-
-      void upsertUserProfile({
-        uid: existing.uid,
-        email: existing.email,
-        displayName: existing.displayName,
-        photoURL: existing.photoURL,
-        createdAt: existing.metadata.creationTime,
-      });
-      void syncLocalEventsToFirebaseForUser(existing.uid);
-      void syncEventsFromFirebaseForUser(existing.uid);
       return;
     }
 
     const accessToken = await ensureGoogleAccessToken(true);
-    try {
-      await signInFirebaseWithGoogleAccessToken(accessToken);
-    } catch (error) {
-      // Login to app should continue even if Firebase auth handshake fails.
-      console.error('Firebase auth for new login failed:', error);
-    }
     const profile = await fetchGoogleUserProfile(accessToken);
     const nextUser: AppUser = {
       uid: profile.uid || makeId(),
@@ -129,15 +96,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     saveUser(nextUser);
     setStoreNamespace(nextUser.uid);
     setUser(nextUser);
-    void upsertUserProfile({
-      uid: nextUser.uid,
-      email: nextUser.email,
-      displayName: nextUser.displayName,
-      photoURL: nextUser.photoURL,
-      createdAt: nextUser.metadata.creationTime,
-    });
-    void syncLocalEventsToFirebaseForUser(nextUser.uid);
-    void syncEventsFromFirebaseForUser(nextUser.uid);
   };
 
   const logout = async () => {
@@ -157,13 +115,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
     saveUser(updated);
     setUser(updated);
-    void upsertUserProfile({
-      uid: updated.uid,
-      email: updated.email,
-      displayName: updated.displayName,
-      photoURL: updated.photoURL,
-      createdAt: updated.metadata.creationTime,
-    });
   };
 
   return (

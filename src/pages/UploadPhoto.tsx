@@ -20,6 +20,16 @@ interface PhotoMetadata {
   progress: number;
 }
 
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string') return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return 'Unknown error';
+  }
+}
+
 export function UploadPhoto() {
   const { eventId } = useParams();
   const navigate = useNavigate();
@@ -89,6 +99,7 @@ export function UploadPhoto() {
     toast.info('Upload started. You can keep browsing while files upload in background.');
     let successCount = 0;
     let failedCount = 0;
+    let firstFailureReason = '';
 
     try {
       const event = getEvent(eventId!);
@@ -102,7 +113,7 @@ export function UploadPhoto() {
       if (!driveFolderId) {
         const createdFolder = await createDriveFolderForEvent(event.name);
         driveFolderId = createdFolder.id;
-        setEventDriveFolder(event.id, {
+        await setEventDriveFolder(event.id, {
           driveFolderId: createdFolder.id,
           driveFolderLink: createdFolder.webViewLink,
         });
@@ -163,6 +174,9 @@ export function UploadPhoto() {
           successCount++;
         } catch (fileError) {
           console.error('Single file upload failed:', fileError);
+          if (!firstFailureReason) {
+            firstFailureReason = toErrorMessage(fileError);
+          }
           safeSetPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'error' } : p));
           failedCount++;
         }
@@ -183,14 +197,14 @@ export function UploadPhoto() {
       if (successCount > 0) {
         toast.success(`Successfully uploaded ${successCount} photo${successCount > 1 ? 's' : ''}!`);
         if (failedCount > 0) {
-          toast.info(`${failedCount} photo${failedCount > 1 ? 's' : ''} could not be uploaded.`);
+          toast.info(`${failedCount} photo${failedCount > 1 ? 's' : ''} failed. ${firstFailureReason || 'Check Google Drive permissions.'}`);
         }
       } else {
-        toast.error('No photos were uploaded. Check Google Drive permission and folder access, then try again.');
+        toast.error(`No photos were uploaded. ${firstFailureReason || 'Check Google Drive permission and folder access, then try again.'}`);
       }
     } catch (error) {
       console.error('Upload error:', error);
-      toast.error('Failed to upload some photos');
+      toast.error(`Upload failed: ${toErrorMessage(error)}`);
     } finally {
       safeSetUploading(false);
     }
