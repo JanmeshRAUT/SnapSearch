@@ -14,9 +14,9 @@ export default function App() {
   return (
     <AuthProvider>
       <Router>
-        <div className="min-h-screen bg-neutral-50 text-neutral-900 font-sans">
+        <div className="min-h-screen bg-neutral-50 text-neutral-900 font-sans flex flex-col">
           <Navbar />
-          <main className="mx-auto w-full max-w-[1720px] px-4 py-6 sm:px-6 sm:py-8 lg:px-10">
+          <main className="w-full flex-1 min-h-[calc(100vh-4rem)] px-4 py-6 sm:px-6 sm:py-8 lg:px-10">
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/event/:eventId" element={<EventGallery />} />

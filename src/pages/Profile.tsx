@@ -59,7 +59,7 @@ export function Profile() {
   if (!user) return null;
 
   return (
-    <div className="w-full max-w-7xl mx-auto space-y-8 sm:space-y-10 pb-24 sm:pb-32">
+    <div className="w-full space-y-8 sm:space-y-10 pb-24 sm:pb-32">
       {/* Profile Header */}
       <div className="relative overflow-hidden rounded-[2rem] border border-orange-200 bg-gradient-to-r from-orange-500 via-orange-500 to-amber-500 p-5 sm:p-8 shadow-xl">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,255,255,0.35),transparent_45%)]" />

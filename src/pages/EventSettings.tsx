@@ -97,7 +97,7 @@ export function EventSettings() {
   }
 
   return (
-    <div className="w-full max-w-7xl mx-auto space-y-6 sm:space-y-8 pb-24 sm:pb-32">
+    <div className="w-full space-y-6 sm:space-y-8 pb-24 sm:pb-32">
       <EventFlowNav eventName={event?.name} />
 
       <div className="rounded-3xl border border-neutral-200 bg-white p-5 sm:p-6 shadow-sm space-y-1">

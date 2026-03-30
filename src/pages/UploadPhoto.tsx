@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useDropzone } from 'react-dropzone';
 import { useAuth } from '../context/AuthContext';
@@ -24,9 +24,31 @@ export function UploadPhoto() {
   const { eventId } = useParams();
   const navigate = useNavigate();
   const { user, login } = useAuth();
+  const isMountedRef = useRef(true);
   const [photoData, setPhotoData] = useState<PhotoMetadata[]>([]);
   const [uploading, setUploading] = useState(false);
   const [overallProgress, setOverallProgress] = useState(0);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const safeSetPhotoData = (updater: React.SetStateAction<PhotoMetadata[]>) => {
+    if (!isMountedRef.current) return;
+    setPhotoData(updater);
+  };
+
+  const safeSetUploading = (value: boolean) => {
+    if (!isMountedRef.current) return;
+    setUploading(value);
+  };
+
+  const safeSetOverallProgress = (value: number) => {
+    if (!isMountedRef.current) return;
+    setOverallProgress(value);
+  };
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const newPhotos = acceptedFiles.map(file => ({
@@ -38,7 +60,7 @@ export function UploadPhoto() {
       status: 'pending' as const,
       progress: 0
     }));
-    setPhotoData(prev => [...prev, ...newPhotos]);
+    safeSetPhotoData(prev => [...prev, ...newPhotos]);
   }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -47,11 +69,11 @@ export function UploadPhoto() {
   } as any);
 
   const removePhoto = (id: string) => {
-    setPhotoData(prev => prev.filter(p => p.id !== id));
+    safeSetPhotoData(prev => prev.filter(p => p.id !== id));
   };
 
   const updateMetadata = (id: string, field: 'caption' | 'tags', value: string) => {
-    setPhotoData(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p));
+    safeSetPhotoData(prev => prev.map(p => p.id === id ? { ...p, [field]: value } : p));
   };
 
   const handleUpload = async () => {
@@ -62,7 +84,9 @@ export function UploadPhoto() {
     }
     if (photoData.length === 0) return;
 
-    setUploading(true);
+    safeSetUploading(true);
+    safeSetOverallProgress(0);
+    toast.info('Upload started. You can keep browsing while files upload in background.');
     let successCount = 0;
     let failedCount = 0;
 
@@ -70,7 +94,7 @@ export function UploadPhoto() {
       const event = getEvent(eventId!);
       if (!event) {
         toast.error('Event not found');
-        setUploading(false);
+        safeSetUploading(false);
         return;
       }
 
@@ -89,7 +113,7 @@ export function UploadPhoto() {
         const photo = photoData[i];
         
         // Update status to compressing
-        setPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'compressing', progress: 20 } : p));
+        safeSetPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'compressing', progress: 20 } : p));
 
         // 1. Image Compression
         const options = {
@@ -97,7 +121,7 @@ export function UploadPhoto() {
           maxWidthOrHeight: 1920,
           useWebWorker: true,
           onProgress: (p: number) => {
-            setPhotoData(prev => prev.map(item => item.id === photo.id ? { ...item, progress: 20 + (p * 0.3) } : item));
+            safeSetPhotoData(prev => prev.map(item => item.id === photo.id ? { ...item, progress: 20 + (p * 0.3) } : item));
           }
         };
         
@@ -110,7 +134,7 @@ export function UploadPhoto() {
         }
 
         // Update status to uploading
-        setPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'uploading', progress: 60 } : p));
+        safeSetPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'uploading', progress: 60 } : p));
         
         const uploadFile = compressedFile instanceof File
           ? compressedFile
@@ -135,15 +159,15 @@ export function UploadPhoto() {
           });
 
           // Update status to done
-          setPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'done', progress: 100 } : p));
+          safeSetPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'done', progress: 100 } : p));
           successCount++;
         } catch (fileError) {
           console.error('Single file upload failed:', fileError);
-          setPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'error' } : p));
+          safeSetPhotoData(prev => prev.map(p => p.id === photo.id ? { ...p, status: 'error' } : p));
           failedCount++;
         }
 
-        setOverallProgress(Math.round(((i + 1) / photoData.length) * 100));
+        safeSetOverallProgress(Math.round(((i + 1) / photoData.length) * 100));
       }
 
       // Record activity
@@ -161,7 +185,6 @@ export function UploadPhoto() {
         if (failedCount > 0) {
           toast.info(`${failedCount} photo${failedCount > 1 ? 's' : ''} could not be uploaded.`);
         }
-        setTimeout(() => navigate(`/event/${eventId}`), 1500);
       } else {
         toast.error('No photos were uploaded. Check Google Drive permission and folder access, then try again.');
       }
@@ -169,12 +192,17 @@ export function UploadPhoto() {
       console.error('Upload error:', error);
       toast.error('Failed to upload some photos');
     } finally {
-      setUploading(false);
+      safeSetUploading(false);
     }
   };
 
+  const continueInBackground = () => {
+    toast.success('Upload continues in background. You can use other screens now.');
+    navigate(`/event/${eventId}`);
+  };
+
   return (
-    <div className="w-full max-w-7xl mx-auto space-y-6 sm:space-y-8 pb-24 sm:pb-32">
+    <div className="w-full space-y-6 sm:space-y-8 pb-24 sm:pb-32">
       <EventFlowNav />
 
       <div className="rounded-3xl border border-neutral-200 bg-white p-5 sm:p-6 shadow-sm space-y-1">
@@ -217,7 +245,7 @@ export function UploadPhoto() {
             </h3>
             {!uploading && (
               <button
-                onClick={() => setPhotoData([])}
+                onClick={() => safeSetPhotoData([])}
                 className="text-sm text-red-500 font-bold hover:underline"
               >
                 Clear All
@@ -243,7 +271,7 @@ export function UploadPhoto() {
                     />
                   )}
 
-                  <div className="relative w-full sm:w-40 aspect-square rounded-2xl overflow-hidden flex-shrink-0">
+                  <div className="relative w-full sm:w-40 aspect-square rounded-2xl overflow-hidden shrink-0">
                     <img src={photo.preview} alt="Preview" className="w-full h-full object-cover" />
                     {!uploading && (
                       <button
@@ -307,7 +335,7 @@ export function UploadPhoto() {
           </div>
 
           <div className="fixed bottom-4 sm:bottom-8 left-0 right-0 px-4 z-40">
-            <div className="w-full max-w-7xl mx-auto">
+            <div className="w-full">
               {uploading ? (
                 <div className="bg-white p-6 rounded-[2.5rem] shadow-2xl border border-neutral-100 space-y-4">
                   <div className="flex justify-between items-center text-sm font-bold">
@@ -323,6 +351,14 @@ export function UploadPhoto() {
                       initial={{ width: 0 }}
                       animate={{ width: `${overallProgress}%` }}
                     />
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      onClick={continueInBackground}
+                      className="px-4 py-2 text-sm font-semibold text-neutral-700 bg-neutral-100 rounded-full hover:bg-neutral-200 transition-colors"
+                    >
+                      Continue in Background
+                    </button>
                   </div>
                 </div>
               ) : (

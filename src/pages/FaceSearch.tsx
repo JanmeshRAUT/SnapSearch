@@ -158,7 +158,7 @@ export function FaceSearch() {
   };
 
   return (
-    <div className="w-full max-w-7xl mx-auto space-y-8 sm:space-y-12 pb-24 sm:pb-32">
+    <div className="w-full space-y-8 sm:space-y-12 pb-24 sm:pb-32">
       <EventFlowNav />
 
       <div className="rounded-3xl border border-neutral-200 bg-white p-5 sm:p-6 shadow-sm space-y-1 text-center max-w-3xl mx-auto px-1">

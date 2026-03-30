@@ -130,7 +130,7 @@ export function ClientDashboard() {
     }
 
     return (
-      <div className="w-full max-w-5xl mx-auto space-y-8 pb-24 sm:pb-32">
+      <div className="w-full space-y-8 pb-24 sm:pb-32">
         <div className="bg-white border border-neutral-100 rounded-[2.5rem] p-8 sm:p-10 shadow-lg space-y-3">
           <p className="text-xs font-bold tracking-widest text-orange-500 uppercase">Secure Client Access</p>
           <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight">{sharedEvent.name}</h1>
@@ -157,7 +157,7 @@ export function ClientDashboard() {
   }
 
   return (
-    <div className="w-full max-w-7xl mx-auto space-y-8 sm:space-y-12 pb-24 sm:pb-32">
+    <div className="w-full space-y-8 sm:space-y-12 pb-24 sm:pb-32">
       {/* Dashboard Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div className="space-y-1">
